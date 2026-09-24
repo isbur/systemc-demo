@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SystemC Compiler — Browser WASM</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #e0e0e0; margin: 0; padding: 20px; }
+  h1 { text-align: center; }
+  #log { background: #0a0a1a; padding: 12px; border-radius: 8px; margin-top: 12px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; }
+  #log .out { color: #aaa; }
+  #log .err { color: #f55; }
+  #log .info { color: #4fc3f7; }
+  .status { text-align: center; margin: 10px 0; }
+  .step { display: none; }
+  .step.active { display: block; }
+  button { background: #1565c0; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer; margin: 4px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  textarea { width: 100%; background: #1a1a2e; color: #e0e0e0; border: 1px solid #333; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>🦀 SystemC → WASM в браузере</h1>
+
+<div id="status" class="status">⏳ Загрузка компилятора...</div>
+<div id="log"><div class="info">═══ Session Log ═══</div></div>
+
+<button id="btnRun" disabled>▶️ Скомпилировать и запустить</button>
+
+<script type="module">
+import { API } from './node_modules/@eduoj/wasm-clang/src/shared.mjs';
+
+const log = document.getElementById('log');
+const status = document.getElementById('status');
+const btnRun = document.getElementById('btnRun');
+
+function logMsg(msg, cls = 'out') {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = msg;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+// Простой тестовый код
+const testCode = `
+#include <cstdio>
+
+int main() {
+  printf("Hello from WASM! SystemC is ready.\\n");
+  int x = 42;
+  printf("x = %d\\n", x);
+  return 0;
+}
+`;
+
+async function main() {
+  try {
+    logMsg('Initializing WASM compiler...', 'info');
+    
+    const api = new API({
+      hostWrite: (msg) => logMsg(msg, 'out'),
+      compileStreaming: async (url) => {
+        logMsg(`Fetching: ${url}`, 'info');
+        const resp = await fetch(url);
+        return WebAssembly.compile(await resp.arrayBuffer());
+      },
+      readBuffer: async (url) => {
+        logMsg(`Fetching binary: ${url}`, 'info');
+        const resp = await fetch(url);
+        return resp.arrayBuffer();
+      },
+      cdnUrl: 'https://cdn.jsdelivr.net/npm/wasm-clang@0.0.1/bin/',
+      showTiming: true,
+    });
+
+    await api.ready;
+    logMsg('Compiler ready!', 'info');
+    status.textContent = '✅ Компилятор готов!';
+    btnRun.disabled = false;
+
+    btnRun.onclick = async () => {
+      try {
+        status.textContent = '⏳ Компиляция...';
+        btnRun.disabled = true;
+        logMsg('--- Compilation ---', 'info');
+
+        // Компилируем и линкуем, запускаем
+        const app = await api.compileLinkRun(testCode, { clangFlags: [] });
+
+        if (app) {
+          logMsg('Application ran and requested animation frame.', 'info');
+        } else {
+          logMsg('Application exited cleanly.', 'info');
+        }
+        status.textContent = '✅ Готово!';
+        btnRun.disabled = false;
+      } catch (e) {
+        logMsg(`Error: ${e.message}`, 'err');
+        status.textContent = '❌ Ошибка компиляции';
+        btnRun.disabled = false;
+      }
+    };
+
+  } catch (e) {
+    logMsg(`Fatal: ${e.message}`, 'err');
+    status.textContent = '❌ Ошибка загрузки компилятора';
+  }
+}
+
+main();
+</script>
+</body>
+</html>

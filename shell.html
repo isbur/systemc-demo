@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SystemC — Кольцевой регистр (Ring Counter)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #111; color: #e0e0e0;
+    min-height: 100vh; display: flex; justify-content: center; align-items: center;
+    padding: 20px;
+  }
+  .app {
+    max-width: 800px; width: 100%;
+    background: #1a1a2e; border-radius: 20px;
+    padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+  h1 { text-align: center; font-size: 1.6rem; font-weight: 600; margin-bottom: 8px; letter-spacing: 0.5px; }
+  .subtitle { text-align: center; color: #888; font-size: 0.85rem; margin-bottom: 24px; }
+  .chip-board { display: flex; justify-content: center; gap: 14px; margin: 28px 0; flex-wrap: wrap; }
+  .bit-cell {
+    width: 72px; height: 96px;
+    background: #222; border: 2px solid #333; border-radius: 12px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    transition: all 0.25s ease;
+  }
+  .bit-cell.active { border-color: #4fc3f7; background: #1a3344; box-shadow: 0 0 20px rgba(79,195,247,0.35); }
+  .bit-cell .bit-label { font-size: 0.7rem; color: #777; margin-bottom: 4px; }
+  .bit-cell .bit-value { font-size: 2rem; font-weight: 700; font-family: 'Courier New', monospace; transition: color 0.2s; }
+  .bit-cell .bit-value.low { color: #555; }
+  .bit-cell.active .bit-value { color: #4fc3f7; }
+
+  .controls { display: flex; justify-content: center; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
+  button {
+    background: #2a2a4a; color: #e0e0e0; border: none;
+    padding: 10px 22px; border-radius: 10px;
+    font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    transition: all 0.15s; min-width: 80px;
+  }
+  button:hover { background: #3a3a6a; transform: translateY(-1px); }
+  button:active { transform: scale(0.96); }
+  button.primary { background: #1565c0; }
+  button.primary:hover { background: #1976d2; }
+  button.danger { background: #b71c1c; }
+  button.danger:hover { background: #c62828; }
+  button.success { background: #2e7d32; }
+  button.success:hover { background: #388e3c; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .info-panel { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; margin: 22px 0; }
+  .info-item { background: #222; border-radius: 10px; padding: 12px; text-align: center; }
+  .info-item .label { font-size: 0.7rem; color: #777; margin-bottom: 4px; }
+  .info-item .value { font-size: 1.1rem; font-weight: 600; font-family: 'Courier New', monospace; }
+
+  .waveform { margin-top: 20px; padding: 14px; background: #0d0d1a; border-radius: 12px; border: 1px solid #2a2a3a; }
+  .waveform-title { font-size: 0.8rem; color: #888; margin-bottom: 8px; }
+  .wave-row { display: flex; align-items: center; margin: 3px 0; gap: 8px; }
+  .wave-label { width: 40px; font-size: 0.75rem; color: #aaa; font-family: monospace; }
+  .wave-canvas { display: flex; align-items: center; height: 20px; gap: 2px; flex: 1; }
+  .wave-seg { height: 18px; border-radius: 2px; min-width: 4px; transition: background 0.1s; }
+  .wave-seg.high { background: #4fc3f7; }
+  .wave-seg.low  { background: #1a3344; }
+
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+  .badge.running { background: #2e7d32; color: #a5d6a7; }
+  .badge.stopped { background: #b71c1c; color: #ef9a9a; }
+
+  #status-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid #2a2a3a; font-size: 0.85rem; color: #888; }
+
+  @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 10px rgba(79,195,247,0.2); } 50% { box-shadow: 0 0 25px rgba(79,195,247,0.5); } }
+  .bit-cell.active { animation: pulse-glow 1.5s infinite; }
+
+  .loading { text-align: center; padding: 60px 0; color: #888; }
+  .loading .spin { display: inline-block; width: 32px; height: 32px; border: 3px solid #333; border-top-color: #4fc3f7; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>🔄 Ring Counter</h1>
+  <p class="subtitle">4-битный кольцевой регистр на SystemC (WASM)</p>
+
+  <div id="loading" class="loading">
+    <div class="spin"></div>
+    <div>Загрузка модуля SystemC (WASM)…</div>
+  </div>
+
+  <div id="main-ui" style="display:none">
+    <div class="chip-board" id="chip-board">
+      <div class="bit-cell" data-bit="3"><div class="bit-label">Q<sub>3</sub></div><div class="bit-value low">0</div></div>
+      <div class="bit-cell" data-bit="2"><div class="bit-label">Q<sub>2</sub></div><div class="bit-value low">0</div></div>
+      <div class="bit-cell" data-bit="1"><div class="bit-label">Q<sub>1</sub></div><div class="bit-value low">0</div></div>
+      <div class="bit-cell" data-bit="0"><div class="bit-label">Q<sub>0</sub></div><div class="bit-value" style="color:#4fc3f7">1</div></div>
+    </div>
+
+    <div class="controls">
+      <button id="btn-step" class="primary">⏭️ Шаг (S)</button>
+      <button id="btn-run" class="success">▶️ Запуск (Space)</button>
+      <button id="btn-reset" class="danger">↺ Сброс (R)</button>
+    </div>
+
+    <div class="info-panel">
+      <div class="info-item"><div class="label">Значение (dec)</div><div class="value" id="val-dec">1</div></div>
+      <div class="info-item"><div class="label">Значение (bin)</div><div class="value" id="val-bin">0001</div></div>
+      <div class="info-item"><div class="label">Тактов</div><div class="value" id="val-cycles">0</div></div>
+      <div class="info-item"><div class="label">Статус</div><div><span class="badge stopped" id="status-badge">Стоим</span></div></div>
+    </div>
+
+    <div class="waveform">
+      <div class="waveform-title">⏱ Временная диаграмма (последние 32 такта)</div>
+      <div class="wave-row"><div class="wave-label">CLK</div><div class="wave-canvas" id="wave-clk"></div></div>
+      <div class="wave-row"><div class="wave-label">Q</div><div class="wave-canvas" id="wave-q"></div></div>
+    </div>
+
+    <div id="status-bar">
+      <span id="sim-status">─</span>
+      <span id="sim-time">SystemC 3.0.2 · WebAssembly</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// Define Module *before* loading ring_counter.js so emscripten reuses it
+var Module = {
+  onRuntimeInitialized: function() {
+    // WASM runtime ready — init SystemC and start the UI
+    Module._init();
+    Module._reset_ring();
+
+    // State
+    var stepCount = 0;
+    var running = false;
+    var runTimer = null;
+    var MAX_HISTORY = 32;
+    var clkHistory = [];
+    var qHistory = [];
+
+    function formatBin(val, bits) {
+      if (bits === undefined) bits = 4;
+      return val.toString(2).padStart(bits, '0');
+    }
+
+    function updateDisplay(val) {
+      for (var i = 0; i < 4; i++) {
+        var bitVal = (val >> i) & 1;
+        var cell = document.querySelector('.bit-cell[data-bit="' + i + '"]');
+        var valueEl = cell.querySelector('.bit-value');
+        valueEl.textContent = bitVal;
+        valueEl.className = 'bit-value' + (bitVal ? '' : ' low');
+        cell.classList.toggle('active', bitVal === 1);
+      }
+      document.getElementById('val-dec').textContent = val;
+      document.getElementById('val-bin').textContent = formatBin(val);
+      document.getElementById('val-cycles').textContent = stepCount;
+    }
+
+    function updateWaveforms(val) {
+      var isHigh = (stepCount % 2) === 1;
+      clkHistory.push(isHigh ? 1 : 0);
+      qHistory.push(val);
+      if (clkHistory.length > MAX_HISTORY) clkHistory.shift();
+      if (qHistory.length > MAX_HISTORY) qHistory.shift();
+
+      var waveClk = document.getElementById('wave-clk');
+      var waveQ   = document.getElementById('wave-q');
+      waveClk.innerHTML = '';
+      waveQ.innerHTML   = '';
+
+      for (var i = 0; i < clkHistory.length; i++) {
+        var segClk = document.createElement('div');
+        segClk.className = 'wave-seg ' + (clkHistory[i] ? 'high' : 'low');
+        segClk.style.width = (200 / MAX_HISTORY) + 'px';
+        waveClk.appendChild(segClk);
+
+        var segQ = document.createElement('div');
+        segQ.className = 'wave-seg';
+        var colors = { 1:'#4fc3f7', 2:'#66bb6a', 4:'#ffa726', 8:'#ef5350' };
+        segQ.style.background = colors[qHistory[i]] || '#1a3344';
+        segQ.style.width = (200 / MAX_HISTORY) + 'px';
+        waveQ.appendChild(segQ);
+      }
+    }
+
+    function doStep() {
+      var val = Module._step();
+      stepCount++;
+      updateDisplay(val);
+      updateWaveforms(val);
+      var simStatus = document.getElementById('sim-status');
+      simStatus.textContent = 'Такт #' + stepCount + '  Q = ' + val + ' (0b' + formatBin(val) + ')';
+    }
+
+    function doReset() {
+      Module._reset_ring();
+      stepCount = 0;
+      clkHistory = [];
+      qHistory = [];
+      var val = Module._get_q();
+      updateDisplay(val);
+      document.getElementById('wave-clk').innerHTML = '';
+      document.getElementById('wave-q').innerHTML = '';
+      document.getElementById('sim-status').textContent = 'Сброшен';
+      document.getElementById('status-badge').className = 'badge stopped';
+      document.getElementById('status-badge').textContent = 'Стоим';
+    }
+
+    function toggleRun() {
+      if (running) {
+        running = false;
+        clearInterval(runTimer);
+        document.getElementById('btn-run').textContent = '▶️ Запуск (Space)';
+        document.getElementById('btn-run').className = 'success';
+        document.getElementById('btn-step').disabled = false;
+        document.getElementById('status-badge').className = 'badge stopped';
+        document.getElementById('status-badge').textContent = 'Стоим';
+      } else {
+        running = true;
+        document.getElementById('btn-run').textContent = '⏸️ Стоп (Space)';
+        document.getElementById('btn-run').className = 'danger';
+        document.getElementById('btn-step').disabled = true;
+        document.getElementById('status-badge').className = 'badge running';
+        document.getElementById('status-badge').textContent = 'Бежит';
+        runTimer = setInterval(function() { doStep(); }, 200);
+      }
+    }
+
+    // Hide loading, show UI
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('main-ui').style.display = 'block';
+
+    // Initial state
+    doReset();
+
+    // Wire buttons
+    document.getElementById('btn-step').addEventListener('click', doStep);
+    document.getElementById('btn-run').addEventListener('click', toggleRun);
+    document.getElementById('btn-reset').addEventListener('click', doReset);
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+      if (e.key === ' ') { e.preventDefault(); toggleRun(); }
+      if (e.key === 's' || e.key === 'S') doStep();
+      if (e.key === 'r' || e.key === 'R') doReset();
+    });
+  }
+};
+</script>
+<script src="ring_counter.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+[workspace]
+name = "systemc-ring-counter"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[system-requirements]
+linux = "2.35"
+
+[tasks]
+# Native build (Linux) — run SystemC simulation directly
+build = "g++ -std=c++17 -I. -I.pixi/envs/default/include -L.pixi/envs/default/lib -o ring_counter main.cpp ring_counter.cpp tb_ring_counter.cpp -lsystemc -Wl,-rpath,.pixi/envs/default/lib"
+run = "pixi run build && ./ring_counter"
+clean = "rm -f ring_counter ring_counter.js ring_counter.wasm"
+
+# WASM build — step 1: compile SystemC static library for wasm32 target
+build-wasm-systemc = """
+mkdir -p build-wasm && cd build-wasm && \
+PATH=$PIXI_PROJECT_ROOT/.pixi/envs/default/bin:$PATH emcmake cmake ../systemc-src \
+  -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 && \
+PATH=$PIXI_PROJECT_ROOT/.pixi/envs/default/bin:$PATH emmake make -j$(nproc)
+"""
+
+# WASM build — step 2: compile ring counter and link with libsystemc.a
+build-wasm = """
+PATH=$PIXI_PROJECT_ROOT/.pixi/envs/default/bin:$PATH emcc -std=c++17 -DSC_USE_PTHREADS \
+  -Isystemc-src/src -o ring_counter.js wasm_main.cpp -Lbuild-wasm/src -lsystemc \
+  -sALLOW_MEMORY_GROWTH \
+  -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
+  -sEXPORTED_FUNCTIONS='["_sc_main","_init","_reset_ring","_step","_get_q","_set_enable"]' \
+  -sINITIAL_MEMORY=64MB -sINVOKE_RUN=0 -sNO_EXIT_RUNTIME
+"""
+
+# WASM build — both steps
+build-wasm-all = "pixi run build-wasm-systemc && pixi run build-wasm"
+
+# WASI SystemC — собрать libsystemc.a для браузерного компилятора (wasm-clang)
+build-wasi-systemc = "bash build-wasi.sh"
+
+# Serve the static web app locally
+serve = "python3 -m http.server 8080"
+serve-web = "python3 -m http.server 8080"
+
+[dependencies]
+systemc = ">=3.0.2,<3.1"
+emscripten = ">=4.0.9,<4.1"
+cmake = ">=3.30,<4"
+ninja = ">=1.12,<2"
+wasmer = ">=7.4.2,<8"
