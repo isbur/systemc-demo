@@ -192,6 +192,9 @@ document.getElementById('btn-compile-cpp').addEventListener('click', async () =>
     log('⏳ Загрузка SystemC VFS...', 'info');
     document.getElementById('status-text').textContent = '⏳ SystemC...';
     try {
+      // Нормализуем код пользователя: #include "sysc/xxx.h" → #include "xxx.h"
+      const normCode = code.replace(/#\s*include\s+"(sysc\/[^"]+)/g,
+        (_, p) => '#include "' + p.split('/').pop() + '"');
       // Загружаем yowasp clang, unity.o, VFS headers
       const [clangMod, unityResp, vfsResp] = await Promise.all([
         import('https://cdn.jsdelivr.net/npm/@yowasp/clang/+esm'),
@@ -202,10 +205,32 @@ document.getElementById('btn-compile-cpp').addEventListener('click', async () =>
       const unityBuf = await unityResp.arrayBuffer();
       const headersVFS = await vfsResp.json();
 
+      // Обёртка: если есть SC_MODULE — добавляем сигналы и экспорты
+      let wrapCode = normCode;
+      if (normCode.includes('SC_MODULE')) {
+        const modName = (normCode.match(/SC_MODULE\s*\(\s*(\w+)\s*\)/)||[,'user_module'])[1];
+        wrapCode = normCode + `
+int sc_main(int, char*[]) { return 0; }
+static sc_signal<bool>* clk_p; static sc_signal<bool>* rst_p; static sc_signal<bool>* en_p;
+static sc_signal<sc_uint<4>>* q_p; static ${modName}* dut;
+extern "C" {
+void init() { if(dut)return;
+  clk_p=new sc_signal<bool>("clk"); rst_p=new sc_signal<bool>("rst"); en_p=new sc_signal<bool>("en");
+  q_p=new sc_signal<sc_uint<4>>("q"); dut=new ${modName}("dut");
+  dut->clk(*clk_p); dut->rst_n(*rst_p); dut->enable(*en_p); dut->q(*q_p);
+  *clk_p=false; *rst_p=false; *en_p=false; sc_start(SC_ZERO_TIME);
+}
+void reset_ring() { *rst_p=false; sc_start(SC_ZERO_TIME); *rst_p=true; sc_start(SC_ZERO_TIME); }
+int32_t step() { *en_p=true; *clk_p=true; sc_start(SC_ZERO_TIME); int32_t v=q_p->read().to_int(); *clk_p=false; sc_start(SC_ZERO_TIME); return v; }
+int32_t get_q() { return q_p->read().to_int(); }
+void set_enable(int32_t e) { *en_p = (e!=0); }
+}`;
+      }
+
       log('⚙ Компиляция SystemC...', 'info');
       // VFS: unity.o, main.cc, и все заголовки
       const vfs = {
-        'main.cc': code,
+        'main.cc': normCode,  // нормализованный пользовательский код
         'systemc-unity.o': new Uint8Array(unityBuf),
         ...headersVFS,
       };
