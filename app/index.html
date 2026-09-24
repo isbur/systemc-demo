@@ -188,37 +188,57 @@ document.getElementById('btn-compile-cpp').addEventListener('click', async () =>
   const hasSystemc = code.includes('<systemc.h>') || code.includes('SC_MODULE') || code.includes('sc_main');
 
   if (hasSystemc) {
-    // ─── Через микросервис (SystemC) ────────────────────────────────
-    log('📡 Отправка на сервер SystemC...', 'info');
-    document.getElementById('status-text').textContent = '⏳ Компиляция на сервере...';
+    // ─── SystemC в браузере (через @yowasp/clang + precompiled unity.o) ──
+    log('⏳ Загрузка SystemC VFS...', 'info');
+    document.getElementById('status-text').textContent = '⏳ SystemC...';
     try {
-      const resp = await fetch(COMPILE_SERVER + '/compile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'module', code }),
-      });
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || 'Server error');
-      // Получаем .wasm, инстанцируем (как раньше)
-      const wasmBuffer = Uint8Array.from(atob(data.wasm), c => c.charCodeAt(0));
+      // Загружаем yowasp clang, unity.o, VFS headers
+      const [clangMod, unityResp, vfsResp] = await Promise.all([
+        import('https://cdn.jsdelivr.net/npm/@yowasp/clang/+esm'),
+        fetch('/app/systemc-unity.o'),
+        fetch('/app/systemc-vfs.json'),
+      ]);
+      const { runClang } = clangMod;
+      const unityBuf = await unityResp.arrayBuffer();
+      const headersVFS = await vfsResp.json();
+
+      log('⚙ Компиляция SystemC...', 'info');
+      // VFS: unity.o, main.cc, и все заголовки
+      const vfs = {
+        'main.cc': code,
+        'systemc-unity.o': new Uint8Array(unityBuf),
+        ...headersVFS,
+      };
+
+      const args = [
+        'clang++', 'main.cc', '-std=c++17',
+        'systemc-unity.o',  // предсобранный SystemC как объектный файл
+        '-o', 'module.wasm',
+        '-Wl,--no-entry,--export=init,--export=step,--export=reset_ring,--export=get_q,--export=set_enable',
+        '--target=wasm32-wasip1', '-I.',
+        '-O2',
+      ];
+      const result = await runClang(args, vfs);
+      const wasmBuf = result['module.wasm'];
+      if (!wasmBuf) throw new Error('no wasm');
+
       const wasi = makeWasiPreview1();
-      const mod = await WebAssembly.compile(wasmBuffer);
-      const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi });
-      wasi._setMemory(inst.exports.memory);
-      const exports = inst.exports;
-      if (exports.__wasm_call_ctors) try { exports.__wasm_call_ctors(); } catch(e) {}
-      if (exports.init && exports.reset_ring) { exports.init(); exports.reset_ring(); }
-      GATES['wasm-module'] = { label: 'SC', inputPins: ['in0','in1','in2','in3','in4','in5','in6','in7'], outputPins: ['out0','out1','out2','out3'], color: '#673AB7' };
+      const inst = await WebAssembly.instantiate(await WebAssembly.compile(wasmBuf), { wasi_snapshot_preview1: wasi });
+      wasi._setMemory(inst.exports.memory); const ex = inst.exports;
+      if (ex.__wasm_call_ctors) try { ex.__wasm_call_ctors(); } catch(e) {}
+      if (ex.init && ex.reset_ring) { ex.init(); ex.reset_ring(); }
+
+      const pmm = { label: 'SysC', inputPins: ['in0','in1','in2','in3','in4','in5','in6','in7'], outputPins: ['out0','out1','out2','out3'], color: '#673AB7' };
+      GATES['wasm-module'] = pmm;
       viz.addElement('wasm-module', 300, 200);
-      const last = Array.from(viz.elementViews.values()).pop();
-      if (last) {
-        last.el.name = 'SysC';
-        last.el._evaluateFn = (inp, out) => { const v = exports.get_q ? exports.get_q() : 0; out.out0=(v>>0)&1; out.out1=(v>>1)&1; out.out2=(v>>2)&1; out.out3=(v>>3)&1; };
-        last.el._clockEdgeFn = (edge, inp, out) => { if(edge!=='pos') return; if(exports.set_enable) exports.set_enable(inp.in1??0); const v = exports.step ? exports.step() : 0; out.out0=(v>>0)&1; out.out1=(v>>1)&1; out.out2=(v>>2)&1; out.out3=(v>>3)&1; };
-        last.el._resetFn = () => { if(exports.reset_ring) exports.reset_ring(); };
-        viz._renderElement(last);
+      const lv = Array.from(viz.elementViews.values()).pop();
+      if (lv) { lv.el.name='SysC';
+        lv.el._evaluateFn = (inp, out) => { const v = ex.get_q ? ex.get_q() : 0; out.out0=(v>>0)&1; out.out1=(v>>1)&1; out.out2=(v>>2)&1; out.out3=(v>>3)&1; };
+        lv.el._clockEdgeFn = (edge, inp, out) => { if(edge!=='pos') return; if(ex.set_enable) ex.set_enable(inp.in1??0); const v = ex.step ? ex.step() : 0; out.out0=(v>>0)&1; out.out1=(v>>1)&1; out.out2=(v>>2)&1; out.out3=(v>>3)&1; };
+        lv.el._resetFn = () => { if(ex.reset_ring) ex.reset_ring(); };
+        viz._renderElement(lv);
       }
-      document.getElementById('status-text').textContent = '✅ SystemC (сервер)';
+      document.getElementById('status-text').textContent = '✅ SystemC in-browser';
     } catch(e) { log('❌ ' + e.message, 'err'); document.getElementById('status-text').textContent = '❌ Ошибка'; }
   } else {
     // ─── Через @yowasp/clang в браузере ─────────────────────────────
