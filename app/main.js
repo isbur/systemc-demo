@@ -4,7 +4,7 @@
  */
 import { SimEngine, GATES } from './elements.js';
 import { VisualConstructor } from './constructor.js';
-import { compileCpp } from './compiler.js';
+import { compileCpp, restoreWasmExports } from './compiler.js';
 import { scheduleSave, loadState } from './persistence.js';
 
 // ─── DOM refs ──────────────────────────────────────────────────────
@@ -267,8 +267,12 @@ function initKeyboard() {
 }
 
 // ─── Загрузка сохранённой схемы ────────────────────────────────────
-function tryRestore() {
-  const restored = loadState(viz, sim, log);
+async function tryRestore() {
+  const wasmRestorer = async (uid, base64) => {
+    const exports = await restoreWasmExports(base64);
+    return exports;
+  };
+  const restored = await loadState(viz, sim, log, wasmRestorer);
   if (restored) {
     setStatus(`↻ Восстановлено`);
   }

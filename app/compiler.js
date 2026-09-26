@@ -52,9 +52,8 @@ void set_enable(int32_t e) { *en_p = (e!=0); }
 /**
  * Добавить скомпилированный WASM-модуль на визуальную канву.
  * Пины: rst_n, enable (входы); q0..q3 (выходы).
- * Часы — глобальный такт SimEngine (кнопка Step / Run).
  */
-function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem) {
+function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem, wasmBuf) {
   const typeId = 'wasm-module-' + Date.now();
   const pmm = {
     label,
@@ -68,7 +67,8 @@ function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem) {
   const lv = Array.from(viz.elementViews.values()).pop();
   if (!lv) return;
   lv.el.name = label;
-  lv.el.isSequential = true;  // реагирует на фронт клока
+  lv.el.isSequential = true;
+  lv.el._wasmBinary = wasmBuf;  // для persistence
   lv.el._evaluateFn = (inp, out) => {
     // Комбинаторное чтение текущего состояния
     const v = exports.get_q ? exports.get_q() : 0;
@@ -311,13 +311,26 @@ export async function compileCpp(code, deps) {
     }
 
     const label = hasSysC ? 'SysC' : 'Wasm';
-    addWasmToCanvas(exports, label, deps.viz, deps.GATES, deps.addPaletteItem);
+    addWasmToCanvas(exports, label, deps.viz, deps.GATES, deps.addPaletteItem, wasmBuf);
     setProgress(100, 100, '✅ Готово');
     setStatus(`✅ ${label} in-browser`);
 
   } catch (err) {
     log('❌ ' + (err.message || err), 'err');
     setStatus('❌ Ошибка');
-    throw err;
-  }
+    }
+}
+
+/**
+ * Восстановить WASM-экспорты из сохранённого бинарника (base64).
+ * Используется persistence.loadState для восстановления WASM-элементов.
+ */
+export async function restoreWasmExports(base64) {
+  const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const wasi = makeWasiPreview1(() => {});
+  const mod = await WebAssembly.compile(binary);
+  const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi });
+  wasi._setMemory(inst.exports.memory);
+  if (inst.exports.__wasm_call_ctors) inst.exports.__wasm_call_ctors();
+  return inst.exports;
 }
