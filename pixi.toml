@@ -41,6 +41,9 @@ build-wasi-systemc = "bash build-wasi.sh"
 serve = "python3 -m http.server 8080"
 serve-web = "python3 -m http.server 8080"
 
+# Build browser artifacts (systemc-vfs.json + systemc-unity.o) via @yowasp/clang
+build-artifacts = "node build-artifacts.mjs"
+
 [dependencies]
 systemc = ">=3.0.2,<3.1"
 emscripten = ">=4.0.9,<4.1"
