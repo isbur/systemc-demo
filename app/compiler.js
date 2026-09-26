@@ -13,6 +13,9 @@ const SC_IDS_O = '/app/sc_ids.o';
 const SYSTEMC_VFS_JSON = '/app/systemc-vfs.json';
 const CLANG_CDN = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/+esm';
 
+// Предзагрузка @yowasp/clang сразу при загрузке страницы (105 MB качается заранее)
+const clangPromise = import(CLANG_CDN).then(m => m, () => {});
+
 /**
  * Проверить, использует ли код SystemC.
  */
@@ -51,7 +54,7 @@ void set_enable(int32_t e) { *en_p = (e!=0); }
 /**
  * Добавить скомпилированный WASM-модуль на визуальную канву.
  */
-function addWasmToCanvas(exports, label, viz, GATES) {
+function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem) {
   const typeId = 'wasm-module-' + Date.now();
   const pmm = {
     label,
@@ -60,6 +63,7 @@ function addWasmToCanvas(exports, label, viz, GATES) {
     color: '#673AB7',
   };
   GATES[typeId] = pmm;
+  if (addPaletteItem) addPaletteItem(typeId, pmm);
   viz.addElement(typeId, 300, 200);
   const lv = Array.from(viz.elementViews.values()).pop();
   if (!lv) return;
@@ -112,7 +116,7 @@ async function compileSystemC(code, deps) {
   setStatus('⏳ Загрузка...');
 
   const [clangMod, coreResp, idsResp, vfsResp] = await Promise.all([
-    import(CLANG_CDN),
+    clangPromise,
     fetch(SYSTEMC_CORE_O),
     fetch(SC_IDS_O),
     fetch(SYSTEMC_VFS_JSON),
@@ -173,7 +177,8 @@ async function compilePlainCpp(code, deps) {
   log('⏳ Загрузка LLVM 22...', 'info');
   setStatus('⏳ LLVM...');
 
-  const { runClang } = await import(CLANG_CDN);
+  const clangMod = await clangPromise;
+  const { runClang } = clangMod;
 
   log('⚙ Компиляция C++ → WASM...', 'info');
   setStatus('⏳ Компиляция...');
@@ -224,7 +229,7 @@ export async function compileCpp(code, deps) {
     }
 
     const label = hasSysC ? 'SysC' : 'Wasm';
-    addWasmToCanvas(exports, label, deps.viz, deps.GATES);
+    addWasmToCanvas(exports, label, deps.viz, deps.GATES, deps.addPaletteItem);
     setStatus(`✅ ${label} in-browser`);
 
   } catch (err) {

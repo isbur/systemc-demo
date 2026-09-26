@@ -121,18 +121,22 @@ function initVisualConstructor() {
 // ─── Палитра элементов ──────────────────────────────────────────────
 function buildPalette() {
   for (const [type, config] of Object.entries(GATES)) {
-    const item = document.createElement('div');
-    item.className = 'palette-item';
-    item.draggable = true;
-    item.innerHTML = `<span class="dot" style="background:${config.color}"></span>
-      <span class="label">${config.label}</span>
-      <span class="pins">${config.inputPins.length}→${config.outputPins.length}</span>`;
-    item.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/plain', type);
-      e.dataTransfer.effectAllowed = 'copy';
-    });
-    paletteList.appendChild(item);
+    addPaletteItem(type, config);
   }
+}
+
+function addPaletteItem(type, config) {
+  const item = document.createElement('div');
+  item.className = 'palette-item';
+  item.draggable = true;
+  item.innerHTML = `<span class="dot" style="background:${config.color}"></span>
+    <span class="label">${config.label}</span>
+    <span class="pins">${config.inputPins.length}→${config.outputPins.length}</span>`;
+  item.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', type);
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+  paletteList.appendChild(item);
 }
 
 // ─── Drag & Drop на канву ───────────────────────────────────────────
@@ -184,7 +188,7 @@ function initCompileButton() {
       return;
     }
     const code = monacoEditor.getValue();
-    await compileCpp(code, { viz, GATES, log, setStatus });
+    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem });
   });
 }
 

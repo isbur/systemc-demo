@@ -8,6 +8,8 @@
 <!-- Monaco Editor CDN -->
 <link rel="stylesheet" data-name="vs/editor/editor.main"
   href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/editor/editor.main.min.css">
+<!-- Предзагрузка компилятора (105 MB LLVM в WASM) — начинаем качать сразу -->
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@yowasp/clang/+esm">
 </head>
 <body>
 
