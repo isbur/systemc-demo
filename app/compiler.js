@@ -8,7 +8,8 @@
 import { makeWasiPreview1 } from './wasi.js';
 
 // URL для статических артефактов SystemC
-const SYSTEMC_UNITY_O = '/app/systemc-unity.o';
+const SYSTEMC_CORE_O = '/app/systemc-core.o';
+const SC_IDS_O = '/app/sc_ids.o';
 const SYSTEMC_VFS_JSON = '/app/systemc-vfs.json';
 const CLANG_CDN = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/+esm';
 
@@ -38,7 +39,7 @@ void init() { if(dut)return;
   clk_p=new sc_signal<bool>("clk"); rst_p=new sc_signal<bool>("rst"); en_p=new sc_signal<bool>("en");
   q_p=new sc_signal<sc_uint<4>>("q"); dut=new ${modName}("dut");
   dut->clk(*clk_p); dut->rst_n(*rst_p); dut->enable(*en_p); dut->q(*q_p);
-  *clk_p=false; *rst_p=false; *en_p=false; sc_start(SC_ZERO_TIME);
+  *clk_p=false; *rst_p=false; *en_p=false;
 }
 void reset_ring() { *rst_p=false; sc_start(SC_ZERO_TIME); *rst_p=true; sc_start(SC_ZERO_TIME); }
 int32_t step() { *en_p=true; *clk_p=true; sc_start(SC_ZERO_TIME); int32_t v=q_p->read().to_int(); *clk_p=false; sc_start(SC_ZERO_TIME); return v; }
@@ -95,7 +96,7 @@ async function instantiateWasm(wasmBuf, log) {
   wasi._setMemory(inst.exports.memory);
   const ex = inst.exports;
   if (ex.__wasm_call_ctors) {
-    try { ex.__wasm_call_ctors(); } catch { /* ignore ctors errors */ }
+    ex.__wasm_call_ctors();
   }
   return ex;
 }
@@ -110,13 +111,15 @@ async function compileSystemC(code, deps) {
   log('⏳ Загрузка заголовков SystemC...', 'info');
   setStatus('⏳ Загрузка...');
 
-  const [clangMod, unityResp, vfsResp] = await Promise.all([
+  const [clangMod, coreResp, idsResp, vfsResp] = await Promise.all([
     import(CLANG_CDN),
-    fetch(SYSTEMC_UNITY_O),
+    fetch(SYSTEMC_CORE_O),
+    fetch(SC_IDS_O),
     fetch(SYSTEMC_VFS_JSON),
   ]);
   const { runClang } = clangMod;
-  const unityBuf = new Uint8Array(await unityResp.arrayBuffer());
+  const coreBuf = new Uint8Array(await coreResp.arrayBuffer());
+  const idsBuf = new Uint8Array(await idsResp.arrayBuffer());
   const headersVFS = await vfsResp.json();
 
   // Обёртка для SC_MODULE
@@ -131,17 +134,24 @@ async function compileSystemC(code, deps) {
 
   const vfs = {
     'main.cc': wrapCode,
-    'systemc-unity.o': unityBuf,
+    'systemc-core.o': coreBuf,
+    'sc_ids.o': idsBuf,
     ...headersVFS,
   };
 
   const args = [
     'clang++', 'main.cc', '-std=c++17',
-    'systemc-unity.o',
+    'systemc-core.o', 'sc_ids.o',
     '-o', 'module.wasm',
-    '-Wl,--no-entry,--export=init,--export=step,--export=reset_ring,--export=get_q,--export=set_enable',
+    '-Wl,--no-entry,--export=init,--export=step,--export=reset_ring,--export=get_q,--export=set_enable,--export=__wasm_call_ctors,--export-dynamic,--initial-memory=33554432',
     '--target=wasm32-wasip1', '-I.',
     '-O2',
+    '-fvisibility=default',
+    '-fno-threadsafe-statics',
+    '-fno-exceptions',
+    '-Wno-parentheses-equality',
+    '-Wno-shift-count-overflow',
+    '-Wno-deprecated',
   ];
 
   const result = await runClang(args, vfs);
