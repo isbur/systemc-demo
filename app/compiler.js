@@ -110,10 +110,55 @@ async function instantiateWasm(wasmBuf, log) {
  * Загружаем @yowasp/clang, unity.o, VFS-заголовки, компилируем main.cc, линкуем.
  */
 async function compileSystemC(code, deps) {
-  const { log, setStatus } = deps;
+  const { log, setStatus, setProgress = () => {} } = deps;
 
-  log('⏳ Загрузка заголовков SystemC...', 'info');
-  setStatus('⏳ Загрузка...');
+  setStatus('⏳ Загрузка компилятора...');
+  log('⏳ Предзагрузка LLVM (105 MB)...', 'info');
+
+  // Фаза 1: предзагружаем WASM-чанки yowasp с прогрессом (0-70%)
+  const CHUNKS = [
+    'llvm.core.wasm',
+    'llvm.core2.wasm',
+    'llvm.core3.wasm',
+    'llvm.core4.wasm',
+  ];
+  const BASE = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/';
+  let totalBytes = 0;
+  let loadedBytes = 0;
+
+  // Сначала узнаем размеры чанков (HEAD-запросы)
+  const sizes = await Promise.all(CHUNKS.map(async (chunk) => {
+    try {
+      const resp = await fetch(BASE + chunk, { method: 'HEAD' });
+      return parseInt(resp.headers.get('content-length') || '0', 10) || 25_000_000;
+    } catch { return 25_000_000; } // ~25 MB fallback
+  }));
+  totalBytes = sizes.reduce((a, b) => a + b, 0);
+
+  // Загружаем с прогрессом
+  const chunkPromises = CHUNKS.map(async (chunk, i) => {
+    const resp = await fetch(BASE + chunk);
+    const reader = resp.body.getReader();
+    const buf = new Uint8Array(sizes[i]);
+    let pos = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf.set(value, pos);
+      pos += value.length;
+      loadedBytes += value.length;
+      setProgress(loadedBytes, totalBytes, `⬇ LLVM ${Math.round(loadedBytes / totalBytes * 100)}%`);
+    }
+    return buf;
+  });
+  await Promise.all(chunkPromises);
+  setProgress(totalBytes, totalBytes, '✅ LLVM загружен');
+
+  log('✅ LLVM загружен', 'info');
+  setStatus('⏳ Загрузка артефактов...');
+
+  // Фаза 2: загружаем clang module + SystemC артефакты (70-85%)
+  setProgress(70, 100, '⏳ Загрузка артефактов...');
 
   const [clangMod, coreResp, idsResp, vfsResp] = await Promise.all([
     clangPromise,
@@ -133,6 +178,7 @@ async function compileSystemC(code, deps) {
     wrapCode = wrapSystemC(code, modName);
   }
 
+  setProgress(85, 100, '⚙ Компиляция...');
   log('⚙ Компиляция кода пользователя + линковка с SystemC...', 'info');
   setStatus('⏳ Компиляция...');
 
@@ -172,14 +218,17 @@ async function compileSystemC(code, deps) {
  * Компиляция plain C++ кода (без SystemC).
  */
 async function compilePlainCpp(code, deps) {
-  const { log, setStatus } = deps;
+  const { log, setStatus, setProgress } = deps;
+  const safeProgress = setProgress || (() => {});
 
+  safeProgress(70, 100, '⏳ Загрузка LLVM...');
   log('⏳ Загрузка LLVM 22...', 'info');
   setStatus('⏳ LLVM...');
 
   const clangMod = await clangPromise;
   const { runClang } = clangMod;
 
+  safeProgress(85, 100, '⚙ Компиляция...');
   log('⚙ Компиляция C++ → WASM...', 'info');
   setStatus('⏳ Компиляция...');
 
@@ -208,7 +257,7 @@ async function compilePlainCpp(code, deps) {
  *   setStatus — функция обновления статус-текста (text)
  */
 export async function compileCpp(code, deps) {
-  const { log, setStatus } = deps;
+  const { log, setStatus, setProgress = () => {} } = deps;
 
   const hasSysC = usesSystemC(code);
 
@@ -217,6 +266,7 @@ export async function compileCpp(code, deps) {
       ? await compileSystemC(code, deps)
       : await compilePlainCpp(code, deps);
 
+    setProgress(95, 100, '⏳ Инстанциирование...');
     log('✅ Компиляция успешна, инстанциирование...', 'info');
     setStatus('⏳ Инстанциирование...');
 
@@ -230,6 +280,7 @@ export async function compileCpp(code, deps) {
 
     const label = hasSysC ? 'SysC' : 'Wasm';
     addWasmToCanvas(exports, label, deps.viz, deps.GATES, deps.addPaletteItem);
+    setProgress(100, 100, '✅ Готово');
     setStatus(`✅ ${label} in-browser`);
 
   } catch (err) {

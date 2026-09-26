@@ -33,6 +33,53 @@ function setStatus(text) {
   statusText.textContent = text;
 }
 
+// ─── Прогресс-бар ──────────────────────────────────────────────────
+let progressBar = null;
+let progressLabel = null;
+
+function initProgressBar() {
+  if (progressBar) return;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:8px;padding:2px 0;';
+  
+  progressLabel = document.createElement('span');
+  progressLabel.style.cssText = 'font-size:0.7rem;color:#888;flex-shrink:0;min-width:100px;';
+  progressLabel.textContent = '⏳ Загрузка...';
+  
+  const barOuter = document.createElement('div');
+  barOuter.style.cssText = 'flex:1;height:8px;background:#222;border-radius:4px;overflow:hidden;';
+  
+  progressBar = document.createElement('div');
+  progressBar.style.cssText = 'height:100%;width:0%;background:linear-gradient(90deg,#4fc3f7,#1565c0);border-radius:4px;transition:width 0.3s;';
+  
+  barOuter.appendChild(progressBar);
+  wrap.appendChild(progressLabel);
+  wrap.appendChild(barOuter);
+  logPanel.appendChild(wrap);
+}
+
+function setProgress(value, max, label) {
+  initProgressBar();
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  progressBar.style.width = pct + '%';
+  progressLabel.textContent = label || `⏳ ${pct}%`;
+  if (pct >= 100) {
+    setTimeout(() => {
+      if (progressBar) {
+        progressBar.style.width = '0%';
+        progressLabel.textContent = '';
+      }
+    }, 1500);
+  }
+}
+
+function hideProgress() {
+  if (progressBar) {
+    progressBar.style.width = '0%';
+    progressLabel.textContent = '';
+  }
+}
+
 // ─── Симуляция ─────────────────────────────────────────────────────
 const sim = new SimEngine();
 let viz = null;
@@ -188,7 +235,7 @@ function initCompileButton() {
       return;
     }
     const code = monacoEditor.getValue();
-    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem });
+    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem, setProgress });
   });
 }
 
