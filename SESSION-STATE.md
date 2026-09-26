@@ -67,3 +67,42 @@ em++ -std=c++17 -o ring_counter_emcc.wasm wasm_main.cpp \
   -I systemc-src/src -O2 -fvisibility=default -fno-threadsafe-statics
 ```
 Проверить: `node --input-type=module -e "WASI instantiation + init/step тесты"`
+---
+
+## 2026-09-24 (поздняя правка): SystemC в браузере через @yowasp/clang — подтверждён фикс
+
+**Проверено:** добавление `-fvisibility=default` к clang args **убирает** `undefined SC_ID_*`
+при линковке unity-сборки SystemC (через runClang/@yowasp/clang).
+
+### Как собрать полностью (план, проверен частично)
+1. VFS-дерево: `{ sysc: buildTree('systemc-src/src/sysc'), 'systemc.h': ..., 'systemc': ... }`
+   (VFS-ключи со слэшами НЕ работают; вложенные объекты — работают)
+2. unity.cc = все `sysc/.../*.cpp` через `#include "sysc/.../x.cpp"` + main.cc (юзер + обёртка)
+   — ИСКЛЮЧИТЬ sc_cor_*.cpp (не нужны для SC_METHOD)
+3. `clang++ -std=c++17 unity.cc -o out.wasm -Wl,--no-entry,--export=init,... 
+   --target=wasm32-wasip1 -I. -fvisibility=default -DSC_USE_PTHREADS -fno-threadsafe-statics -O2`
+
+### Проблема: были undefined
+- `__cxa_allocate_exception` / `__cxa_throw` → нужны stubs (наработки в SESSION-LOG.md):
+  ```c
+  extern "C" {
+    void* __cxa_allocate_exception(size_t s){ return malloc(32); }
+    void __cxa_throw(void* a, void* b, void (*c)(void*)){ (void)a;(void)b;(void)c; abort(); }
+  }
+  ```
+- `sc_module_registry`, `sc_ppq_base`, `sc_plist_base` → это просто не включённые .cpp
+  (sc_module_registry.cpp, sc_export.cpp, utils/sc_pq.cpp, utils/sc_list.cpp). Взять ВСЕ .cpp.
+
+### Обходной вариант (быстрее, рекомендуют для следующего агента)
+Скомпилировать SystemC ОДИН раз предварительно в `systemc-unity.o`:
+```bash
+clang++ -c unity.cc -o systemc-unity.o ... -fvisibility=default   # 1.5 МБ (работает)
+```
+а юзер-код: `clang++ -c main.cc -o main.o ...` + линковка:
+```js
+import { runLLVM } from '@yowasp/clang';   // да, экспортирует runLLVM c 'wasm-ld'!
+await runLLVM(['wasm-ld','--no-entry','--export=init',...,'u.o','m.o','-o','out.wasm'], { file tree });
+```
+Это убирает повторную полную компиляцию SystemC на каждый запрос.
+
+**Урок:** не тратить время на clang 8 / CDN wasm-clang@0.0.1; готовый @yowasp/clang 22 + деревянная VFS + fvisibility=default решает SystemC в браузере.
