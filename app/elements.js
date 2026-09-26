@@ -82,13 +82,13 @@ class SimEngine {
       }
     }
 
-    // 4. Дельта-циклы — ВСЕ элементы вычисляются (sequential — через evaluate
-    //    с детекцией фронта по своему пину clk)
+    // 4. Дельта-циклы — Clock пропускаем (он уже своё сделал на шаге 2)
     let changed = true;
     let maxDelta = 20;
     while (changed && maxDelta-- > 0) {
       changed = false;
       for (const el of this.elements) {
+        if (el._isClock) continue;
         const result = el.evaluate();
         if (result.changed) {
           changed = true;
