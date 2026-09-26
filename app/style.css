@@ -1,0 +1,148 @@
+/* ─── SystemC Constructor — Styles ───────────────────────────── */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, sans-serif;
+  background: #111;
+  color: #e0e0e0;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Header ─── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+.header h1 { font-size: 1.1rem; font-weight: 600; }
+.header .badge { font-size: 0.7rem; color: #888; }
+
+/* ─── Layout ─── */
+.main-layout { display: flex; flex: 1; overflow: hidden; }
+
+/* Left: Palette */
+.palette {
+  width: 140px;
+  background: #16162a;
+  border-right: 1px solid #333;
+  padding: 8px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.palette h3 {
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  margin: 2px 0;
+  border-radius: 6px;
+  cursor: grab;
+  font-size: 0.8rem;
+  background: #222;
+  border: 1px solid #333;
+  transition: 0.15s;
+}
+.palette-item:hover { border-color: #4fc3f7; background: #1a3344; }
+.palette-item .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.palette-item .label { flex: 1; }
+.palette-item .pins { font-size: 0.6rem; color: #666; }
+
+/* Center: Canvas */
+.canvas-wrap { flex: 1; position: relative; background: #0d0d1a; overflow: hidden; }
+.canvas-wrap svg { width: 100%; height: 100%; }
+
+/* Right: Monaco */
+.editor-panel {
+  width: 360px;
+  background: #1a1a2e;
+  border-left: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.editor-panel .editor-header {
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  color: #888;
+  background: #222;
+  border-bottom: 1px solid #333;
+}
+.editor-panel .editor-wrap { flex: 1; position: relative; min-height: 200px; }
+#monaco-container { width: 100%; height: 100%; }
+.editor-panel .compile-bar {
+  padding: 6px;
+  border-top: 1px solid #333;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.editor-panel .compile-bar button {
+  flex: 1;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+/* Bottom: Status & Controls */
+.bottom-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: #1a1a2e;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+  font-size: 0.8rem;
+}
+.bottom-bar button {
+  background: #2a2a4a;
+  color: #e0e0e0;
+  border: none;
+  padding: 4px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.bottom-bar button:hover { background: #3a3a6a; }
+.bottom-bar button.primary { background: #1565c0; }
+.bottom-bar button.primary:hover { background: #1976d2; }
+.bottom-bar button.danger { background: #b71c1c; }
+.bottom-bar .status-text { flex: 1; color: #888; }
+.bottom-bar .val-display { font-family: monospace; color: #4fc3f7; }
+
+/* Log */
+.log-panel {
+  height: 120px;
+  background: #0a0a1a;
+  border-top: 1px solid #333;
+  overflow-y: auto;
+  padding: 6px 12px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+.log-panel .line { color: #666; }
+.log-panel .line.info { color: #4fc3f7; }
+.log-panel .line.err { color: #f55; }
+.log-panel .line.ok { color: #4caf50; }
+
+.hidden { display: none !important; }
