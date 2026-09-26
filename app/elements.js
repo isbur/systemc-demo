@@ -63,9 +63,9 @@ class SimEngine {
     this.cycle++;
     this.time += this.clockPeriod;
 
-    // 1. Сохраняем предыдущие входы для всех (нужно для детекции фронта)
+    // 1. Сохраняем предыдущие входы прямо на объекте inputs (inp._prevInputs в evaluate)
     for (const el of this.elements) {
-      el._prevInputs = { ...el.inputs };
+      el.inputs._prevInputs = { ...el.inputs };
     }
 
     // 2. Обновляем Clock-элементы — они переключают свой выход
