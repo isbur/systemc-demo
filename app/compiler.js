@@ -70,7 +70,8 @@ function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem, wasmBuf) {
   // Не помечаем isSequential — детекция фронта по пину clk в evaluate
   lv.el._wasmBinary = wasmBuf;
   lv.el._evaluateFn = (inp, out) => {
-    if (inp.rst_n === 0) {
+    // сброс по спадающему фронту rst_n (1→0)
+    if (inp._prevInputs?.rst_n === 1 && inp.rst_n === 0) {
       if (exports.reset_ring) exports.reset_ring();
     } else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
       if (exports.set_enable) exports.set_enable(inp.enable ?? 0);

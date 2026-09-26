@@ -270,8 +270,8 @@ defineElement('DFF', {
   color: '#3F51B5',
   initialState: { qval: 0 },
   evaluate: (inp, out, state) => {
-    // сброс приоритетнее всего
-    if (inp.rst_n === 0) { state.qval = 0; }
+    // сброс по спадающему фронту rst_n (1→0), а не по статическому 0
+    if (inp._prevInputs?.rst_n === 1 && inp.rst_n === 0) { state.qval = 0; }
     // rising edge на clk
     else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
       state.qval = inp.d;
@@ -288,7 +288,8 @@ defineElement('RING4', {
   color: '#E91E63',
   initialState: { reg: 0b0001 },
   evaluate: (inp, out, state) => {
-    if (inp.rst_n === 0) { state.reg = 0b0001; }
+    // сброс по спадающему фронту rst_n (1→0)
+    if (inp._prevInputs?.rst_n === 1 && inp.rst_n === 0) { state.reg = 0b0001; }
     else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
       if (inp.enable) {
         const msb = (state.reg >> 3) & 1;
@@ -309,7 +310,8 @@ defineElement('COUNTER4', {
   color: '#009688',
   initialState: { val: 0 },
   evaluate: (inp, out, state) => {
-    if (inp.rst_n === 0) { state.val = 0; }
+    // сброс по спадающему фронту rst_n (1→0)
+    if (inp._prevInputs?.rst_n === 1 && inp.rst_n === 0) { state.val = 0; }
     else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
       if (inp.enable) { state.val = (state.val + 1) & 0xF; }
     }
