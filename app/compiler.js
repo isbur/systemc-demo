@@ -57,7 +57,7 @@ function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem, wasmBuf) {
   const typeId = 'wasm-module-' + Date.now();
   const pmm = {
     label,
-    inputPins: ['rst_n', 'enable'],
+    inputPins: ['clk', 'rst_n', 'enable'],
     outputPins: ['q0', 'q1', 'q2', 'q3'],
     color: '#673AB7',
   };
@@ -67,35 +67,22 @@ function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem, wasmBuf) {
   const lv = Array.from(viz.elementViews.values()).pop();
   if (!lv) return;
   lv.el.name = label;
-  lv.el.isSequential = true;
-  lv.el._wasmBinary = wasmBuf;  // для persistence
+  // Не помечаем isSequential — детекция фронта по пину clk в evaluate
+  lv.el._wasmBinary = wasmBuf;
   lv.el._evaluateFn = (inp, out) => {
-    // Комбинаторное чтение текущего состояния
-    const v = exports.get_q ? exports.get_q() : 0;
-    out.q0 = (v >> 0) & 1;
-    out.q1 = (v >> 1) & 1;
-    out.q2 = (v >> 2) & 1;
-    out.q3 = (v >> 3) & 1;
-  };
-  lv.el._clockEdgeFn = (edge, inp, out) => {
-    // Срабатывает по положительному фронту глобального такта SimEngine
-    if (edge !== 'pos') return;
-    // Сброс
     if (inp.rst_n === 0) {
       if (exports.reset_ring) exports.reset_ring();
-      const v = exports.get_q ? exports.get_q() : 0;
+    } else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
+      if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
+      const v = exports.step ? exports.step() : 0;
       out.q0 = (v >> 0) & 1; out.q1 = (v >> 1) & 1;
       out.q2 = (v >> 2) & 1; out.q3 = (v >> 3) & 1;
       return;
     }
-    // Enable
-    if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
-    // Шаг: внутри step() сам делает *clk_p=true, sc_start, *clk_p=false
-    const v = exports.step ? exports.step() : 0;
-    out.q0 = (v >> 0) & 1;
-    out.q1 = (v >> 1) & 1;
-    out.q2 = (v >> 2) & 1;
-    out.q3 = (v >> 3) & 1;
+    // Комбинаторное чтение (для обновления выходов после сброса)
+    const v = exports.get_q ? exports.get_q() : 0;
+    out.q0 = (v >> 0) & 1; out.q1 = (v >> 1) & 1;
+    out.q2 = (v >> 2) & 1; out.q3 = (v >> 3) & 1;
   };
   lv.el._resetFn = () => { if (exports.reset_ring) exports.reset_ring(); };
   viz._renderElement(lv);

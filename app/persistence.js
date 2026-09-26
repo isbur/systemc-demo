@@ -86,22 +86,16 @@ export async function loadState(viz, sim, log, wasmRestorer) {
     for (const [uid, exports] of Object.entries(uidToExports)) {
       const view = viz.elementViews.get(uid);
       if (!view) continue;
-      // Переустанавливаем функции-обработчики
       view.el._evaluateFn = (inp, out) => {
-        const v = exports.get_q ? exports.get_q() : 0;
-        out.q0 = (v >> 0) & 1; out.q1 = (v >> 1) & 1;
-        out.q2 = (v >> 2) & 1; out.q3 = (v >> 3) & 1;
-      };
-      view.el._clockEdgeFn = (edge, inp, out) => {
-        if (edge !== 'pos') return;
         if (inp.rst_n === 0) {
           if (exports.reset_ring) exports.reset_ring();
-          const v = exports.get_q ? exports.get_q() : 0;
+        } else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
+          if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
+          const v = exports.step ? exports.step() : 0;
           out.q0 = (v>>0)&1; out.q1 = (v>>1)&1; out.q2 = (v>>2)&1; out.q3 = (v>>3)&1;
           return;
         }
-        if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
-        const v = exports.step ? exports.step() : 0;
+        const v = exports.get_q ? exports.get_q() : 0;
         out.q0 = (v>>0)&1; out.q1 = (v>>1)&1; out.q2 = (v>>2)&1; out.q3 = (v>>3)&1;
       };
       view.el._resetFn = () => { if (exports.reset_ring) exports.reset_ring(); };

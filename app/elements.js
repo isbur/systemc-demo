@@ -1,15 +1,15 @@
 /**
  * Библиотека готовых элементов и симуляционное ядро.
- * Каждый элемент — это JS-класс с единым интерфейсом.
+ * Теперь с визуальным Clock-элементом и детекцией фронта по пинам.
  */
 
 // ─── Ядро симуляции ──────────────────────────────────────────────────────────
 
 class SimEngine {
   constructor() {
-    this.elements = [];        // все элементы на схеме
-    this.connections = [];     // { fromEl, fromPin, toEl, toPin }
-    this.clockPeriod = 10;     // ns
+    this.elements = [];
+    this.connections = [];
+    this.clockPeriod = 10;
     this.running = false;
     this.time = 0;
     this.cycle = 0;
@@ -35,7 +35,6 @@ class SimEngine {
 
   connect(fromEl, fromPin, toEl, toPin) {
     this.connections.push({ fromEl, fromPin, toEl, toPin });
-    // Немедленно копируем значение на вход
     const val = fromEl.outputs[fromPin] ?? 0;
     toEl.inputs[toPin] = val;
     this._emit('connected', { fromEl, fromPin, toEl, toPin });
@@ -50,7 +49,6 @@ class SimEngine {
 
   resetAll() {
     for (const el of this.elements) el.reset();
-    // Пропагация начальных значений
     for (const c of this.connections) {
       c.toEl.inputs[c.toPin] = c.fromEl.outputs[c.fromPin] ?? 0;
     }
@@ -60,29 +58,40 @@ class SimEngine {
     this._emit('reset');
   }
 
-  /** Один шаг симуляции — положительный фронт clk */
+  /** Один шаг симуляции: Clock-элементы переключаются, дельта-циклы */
   step() {
     this.cycle++;
     this.time += this.clockPeriod;
 
-    // 1. Положительный фронт — клоковые элементы обновляются
+    // 1. Сохраняем предыдущие входы для всех (нужно для детекции фронта)
     for (const el of this.elements) {
-      if (el.isSequential) {
-        el.clockEdge('pos');
+      el._prevInputs = { ...el.inputs };
+    }
+
+    // 2. Обновляем Clock-элементы — они переключают свой выход
+    for (const el of this.elements) {
+      if (el._isClock) {
+        el.evaluate();
       }
     }
 
-    // 2. Дельта-циклы: пропагация комбинаторики до стабилизации
+    // 3. Пропагируем изменения от Clock-элементов
+    for (const c of this.connections) {
+      if (c.fromEl._isClock) {
+        c.toEl.inputs[c.toPin] = c.fromEl.outputs[c.fromPin] ?? 0;
+      }
+    }
+
+    // 4. Дельта-циклы — ВСЕ элементы вычисляются (sequential — через evaluate
+    //    с детекцией фронта по своему пину clk)
     let changed = true;
     let maxDelta = 20;
     while (changed && maxDelta-- > 0) {
       changed = false;
       for (const el of this.elements) {
-        if (el.isSequential) continue; // sequential обновляются только по фронту
         const result = el.evaluate();
         if (result.changed) {
           changed = true;
-          // Пропагировать изменения на подключенные элементы
           for (const c of this.connections) {
             if (c.fromEl === el) {
               c.toEl.inputs[c.toPin] = c.fromEl.outputs[c.fromPin] ?? 0;
@@ -92,14 +101,7 @@ class SimEngine {
       }
     }
 
-    // 3. Отрицательный фронт (для двухфазных схем — опционально)
-    for (const el of this.elements) {
-      if (el.isSequential) {
-        el.clockEdge('neg');
-      }
-    }
-
-    // 4. Трейс
+    // 5. Трейс
     const snapshot = {};
     for (const el of this.elements) {
       snapshot[el.name] = { ...el.outputs };
@@ -129,17 +131,13 @@ class SimEngine {
     this._emit('stop');
   }
 
-  /** Сериализация соединений */
   serializeConnections() {
     return this.connections.map(c => ({
-      fromUid: c.fromEl.uid,
-      fromPin: c.fromPin,
-      toUid: c.toEl.uid,
-      toPin: c.toPin,
+      fromUid: c.fromEl.uid, fromPin: c.fromPin,
+      toUid: c.toEl.uid, toPin: c.toPin,
     }));
   }
 
-  /** Восстановление соединений по uid (вызывать после добавления всех элементов) */
   deserializeConnections(conns, elementByUid) {
     for (const cd of conns) {
       const fromEl = elementByUid(cd.fromUid);
@@ -155,11 +153,11 @@ class LogicElement {
   constructor(config) {
     this.name = config.name || 'unnamed';
     this.type = config.type || 'custom';
-    this.isSequential = config.isSequential || false;
     this.inputs = {};
     this.outputs = {};
     this.state = {};
     this._prevOutputs = {};
+    this._prevInputs = {};
     this.inputPins = config.inputPins || [];
     this.outputPins = config.outputPins || [];
 
@@ -169,26 +167,37 @@ class LogicElement {
     for (const [k, v] of Object.entries(config.initialState || {})) this.state[k] = v;
 
     if (config.evaluate) this._evaluateFn = config.evaluate;
-    if (config.clockEdge) this._clockEdgeFn = config.clockEdge;
     if (config.reset) this._resetFn = config.reset;
+    if (config.isClock) this._isClock = true;
+  }
+
+  /** Проверить, был ли на пине rising edge */
+  _rising(pin) {
+    const prev = this._prevInputs[pin] ?? 0;
+    return prev === 0 && this.inputs[pin] === 1;
+  }
+
+  /** Проверить, был ли на пине falling edge */
+  _falling(pin) {
+    const prev = this._prevInputs[pin] ?? 0;
+    return prev === 1 && this.inputs[pin] === 0;
   }
 
   evaluate() {
     const old = { ...this.outputs };
-    if (this._evaluateFn) this._evaluateFn(this.inputs, this.outputs, this.state);
+    if (this._evaluateFn) {
+      this._evaluateFn(this.inputs, this.outputs, this.state);
+    }
     const changed = Object.keys(this.outputs).some(k => this.outputs[k] !== old[k]);
     if (changed) this._prevOutputs = old;
     return { changed };
-  }
-
-  clockEdge(edge) {
-    if (this._clockEdgeFn) this._clockEdgeFn(edge, this.inputs, this.outputs, this.state);
   }
 
   reset() {
     for (const k of Object.keys(this.inputs)) this.inputs[k] = 0;
     for (const k of Object.keys(this.outputs)) this.outputs[k] = 0;
     if (this._resetFn) this._resetFn(this.state);
+    this._prevInputs = {};
   }
 }
 
@@ -200,7 +209,34 @@ function defineElement(type, config) {
   GATES[type] = config;
 }
 
-// Базовые вентили
+// ═══ Clock ══════════════════════════════════════════════════════════════════
+// Единственный источник тактового сигнала. При каждом step() переключает clk.
+defineElement('CLOCK', {
+  label: 'Clock',
+  inputPins: [],
+  outputPins: ['clk'],
+  color: '#FF5722',
+  isClock: true,
+  initialState: { phase: 0 },
+  evaluate: (inp, out, state) => {
+    state.phase = 1 - state.phase;  // toggle each step
+    out.clk = state.phase;
+  },
+  reset: (state) => { state.phase = 0; },
+});
+
+// ═══ Константы (VCC = 1, GND = 0) ═══════════════════════════════════════════
+defineElement('VCC', {
+  label: 'VCC', inputPins: [], outputPins: ['y'],
+  color: '#FFD600', evaluate: (inp, out) => { out.y = 1; }
+});
+defineElement('GND', {
+  label: 'GND', inputPins: [], outputPins: ['y'],
+  color: '#333', evaluate: (inp, out) => { out.y = 0; }
+});
+
+// ═══ Базовые вентили (combinatorial) ═══════════════════════════════════════
+
 defineElement('AND', {
   label: 'AND', inputPins: ['a', 'b'], outputPins: ['y'],
   color: '#4CAF50', evaluate: (inp, out) => { out.y = inp.a & inp.b; }
@@ -226,70 +262,70 @@ defineElement('XOR', {
   color: '#00BCD4', evaluate: (inp, out) => { out.y = inp.a ^ inp.b; }
 });
 
-// D-триггер
+// ═══ D-триггер ══════════════════════════════════════════════════════════════
+// clk — подключается к выходу Clock-элемента.
+// Детекция rising edge через _rising('clk')
 defineElement('DFF', {
   label: 'D-FF', inputPins: ['clk', 'd', 'rst_n'], outputPins: ['q', 'qn'],
-  isSequential: true, color: '#3F51B5',
+  color: '#3F51B5',
   initialState: { qval: 0 },
-  evaluate: (inp, out) => { out.q = out.q; out.qn = out.qn; }, // комбинаторно — без изменений
-  clockEdge: (edge, inp, out, state) => {
-    if (edge !== 'pos') return;
+  evaluate: (inp, out, state) => {
+    // сброс приоритетнее всего
     if (inp.rst_n === 0) { state.qval = 0; }
-    else { state.qval = inp.d; }
+    // rising edge на clk
+    else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
+      state.qval = inp.d;
+    }
     out.q = state.qval;
     out.qn = state.qval ? 0 : 1;
   },
   reset: (state) => { state.qval = 0; }
 });
 
-// 4-битный кольцевой регистр
+// ═══ 4-битный кольцевой регистр ════════════════════════════════════════════
 defineElement('RING4', {
   label: 'Ring Ctr', inputPins: ['clk', 'rst_n', 'enable'], outputPins: ['q0', 'q1', 'q2', 'q3'],
-  isSequential: true, color: '#E91E63',
+  color: '#E91E63',
   initialState: { reg: 0b0001 },
   evaluate: (inp, out, state) => {
+    if (inp.rst_n === 0) { state.reg = 0b0001; }
+    else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
+      if (inp.enable) {
+        const msb = (state.reg >> 3) & 1;
+        state.reg = ((state.reg << 1) | msb) & 0xF;
+      }
+    }
     out.q0 = (state.reg >> 0) & 1;
     out.q1 = (state.reg >> 1) & 1;
     out.q2 = (state.reg >> 2) & 1;
     out.q3 = (state.reg >> 3) & 1;
   },
-  clockEdge: (edge, inp, out, state) => {
-    if (edge !== 'pos') return;
-    if (inp.rst_n === 0) { state.reg = 0b0001; return; }
-    if (inp.enable) {
-      const msb = (state.reg >> 3) & 1;
-      state.reg = ((state.reg << 1) | msb) & 0xF;
-    }
-  },
   reset: (state) => { state.reg = 0b0001; }
 });
 
-// 4-битный счётчик
+// ═══ 4-битный счётчик ════════════════════════════════════════════════════════
 defineElement('COUNTER4', {
   label: 'Counter', inputPins: ['clk', 'rst_n', 'enable'], outputPins: ['q0', 'q1', 'q2', 'q3'],
-  isSequential: true, color: '#009688',
+  color: '#009688',
   initialState: { val: 0 },
   evaluate: (inp, out, state) => {
+    if (inp.rst_n === 0) { state.val = 0; }
+    else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
+      if (inp.enable) { state.val = (state.val + 1) & 0xF; }
+    }
     out.q0 = (state.val >> 0) & 1;
     out.q1 = (state.val >> 1) & 1;
     out.q2 = (state.val >> 2) & 1;
     out.q3 = (state.val >> 3) & 1;
   },
-  clockEdge: (edge, inp, out, state) => {
-    if (edge !== 'pos') return;
-    if (inp.rst_n === 0) { state.val = 0; return; }
-    if (inp.enable) { state.val = (state.val + 1) & 0xF; }
-  },
   reset: (state) => { state.val = 0; }
 });
 
-// 2-to-1 мультиплексор
+// ═══ Мультиплексоры ══════════════════════════════════════════════════════════
 defineElement('MUX2', {
   label: 'MUX 2→1', inputPins: ['sel', 'a', 'b'], outputPins: ['y'],
   color: '#795548', evaluate: (inp, out) => { out.y = inp.sel ? inp.b : inp.a; }
 });
-
-// 4-to-1 мультиплексор
 defineElement('MUX4', {
   label: 'MUX 4→1', inputPins: ['s0', 's1', 'a', 'b', 'c', 'd'], outputPins: ['y'],
   color: '#8D6E63', evaluate: (inp, out) => {
@@ -298,7 +334,7 @@ defineElement('MUX4', {
   }
 });
 
-// Сумматор (полусумматор)
+// ═══ Полусумматор ═════════════════════════════════════════════════════════════
 defineElement('HALF_ADDER', {
   label: 'Half Add', inputPins: ['a', 'b'], outputPins: ['sum', 'carry'],
   color: '#FF5722', evaluate: (inp, out) => {
