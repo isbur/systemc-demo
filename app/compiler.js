@@ -29,8 +29,6 @@ function usesSystemC(code) {
 
 /**
  * Сгенерировать обёртку для SC_MODULE: sc_main, сигналы, extern "C" экспорты.
- * @param {string} code — исходный код пользователя
- * @param {string} modName — имя модуля (из SC_MODULE)
  */
 function wrapSystemC(code, modName) {
   return code + `
@@ -53,13 +51,15 @@ void set_enable(int32_t e) { *en_p = (e!=0); }
 
 /**
  * Добавить скомпилированный WASM-модуль на визуальную канву.
+ * Пины: rst_n, enable (входы); q0..q3 (выходы).
+ * Часы — глобальный такт SimEngine (кнопка Step / Run).
  */
 function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem) {
   const typeId = 'wasm-module-' + Date.now();
   const pmm = {
     label,
-    inputPins: ['in0','in1','in2','in3','in4','in5','in6','in7'],
-    outputPins: ['out0','out1','out2','out3'],
+    inputPins: ['rst_n', 'enable'],
+    outputPins: ['q0', 'q1', 'q2', 'q3'],
     color: '#673AB7',
   };
   GATES[typeId] = pmm;
@@ -68,21 +68,34 @@ function addWasmToCanvas(exports, label, viz, GATES, addPaletteItem) {
   const lv = Array.from(viz.elementViews.values()).pop();
   if (!lv) return;
   lv.el.name = label;
+  lv.el.isSequential = true;  // реагирует на фронт клока
   lv.el._evaluateFn = (inp, out) => {
+    // Комбинаторное чтение текущего состояния
     const v = exports.get_q ? exports.get_q() : 0;
-    out.out0 = (v >> 0) & 1;
-    out.out1 = (v >> 1) & 1;
-    out.out2 = (v >> 2) & 1;
-    out.out3 = (v >> 3) & 1;
+    out.q0 = (v >> 0) & 1;
+    out.q1 = (v >> 1) & 1;
+    out.q2 = (v >> 2) & 1;
+    out.q3 = (v >> 3) & 1;
   };
   lv.el._clockEdgeFn = (edge, inp, out) => {
+    // Срабатывает по положительному фронту глобального такта SimEngine
     if (edge !== 'pos') return;
-    if (exports.set_enable) exports.set_enable(inp.in1 ?? 0);
+    // Сброс
+    if (inp.rst_n === 0) {
+      if (exports.reset_ring) exports.reset_ring();
+      const v = exports.get_q ? exports.get_q() : 0;
+      out.q0 = (v >> 0) & 1; out.q1 = (v >> 1) & 1;
+      out.q2 = (v >> 2) & 1; out.q3 = (v >> 3) & 1;
+      return;
+    }
+    // Enable
+    if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
+    // Шаг: внутри step() сам делает *clk_p=true, sc_start, *clk_p=false
     const v = exports.step ? exports.step() : 0;
-    out.out0 = (v >> 0) & 1;
-    out.out1 = (v >> 1) & 1;
-    out.out2 = (v >> 2) & 1;
-    out.out3 = (v >> 3) & 1;
+    out.q0 = (v >> 0) & 1;
+    out.q1 = (v >> 1) & 1;
+    out.q2 = (v >> 2) & 1;
+    out.q3 = (v >> 3) & 1;
   };
   lv.el._resetFn = () => { if (exports.reset_ring) exports.reset_ring(); };
   viz._renderElement(lv);
@@ -105,35 +118,61 @@ async function instantiateWasm(wasmBuf, log) {
   return ex;
 }
 
-// ═══ Предзагрузка WASM-чанков LLVM ═══════════════════════════════
+// ═══ Предзагрузка WASM-чанков LLVM в Cache API ═══════════════════
 
+const CACHE_NAME = 'llvm-chunks-v1';
+const LLVM_CHUNKS = [
+  'llvm.core.wasm', 'llvm.core2.wasm',
+  'llvm.core3.wasm', 'llvm.core4.wasm',
+];
+const LLVM_BASE = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/';
+
+/** Предзагрузить WASM-чанки последовательно (чтоб прогресс был точным),
+ *  затем сохранить в Cache API. При повторных вызовах берёт из кэша. */
 async function prefetchLLVM(setProgress) {
-  const CHUNKS = [
-    'llvm.core.wasm', 'llvm.core2.wasm',
-    'llvm.core3.wasm', 'llvm.core4.wasm',
-  ];
-  const BASE = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/';
-  let total = 0, loaded = 0;
+  const cache = await caches.open(CACHE_NAME);
+  const uncached = [];
 
-  const sizes = await Promise.all(CHUNKS.map(async (c) => {
+  for (const chunk of LLVM_CHUNKS) {
+    const url = LLVM_BASE + chunk;
+    const cached = await cache.match(url);
+    if (!cached) uncached.push(chunk);
+  }
+
+  if (uncached.length === 0) {
+    if (setProgress) setProgress(100, 100, '✅ LLVM (из кэша)');
+    return;
+  }
+
+  // Узнаём общий размер
+  let total = 0;
+  const sizes = {};
+  for (const c of uncached) {
     try {
-      const r = await fetch(BASE + c, { method: 'HEAD' });
-      return parseInt(r.headers.get('content-length') || '0', 10) || 25_000_000;
-    } catch { return 25_000_000; }
-  }));
-  total = sizes.reduce((a, b) => a + b, 0);
+      const r = await fetch(LLVM_BASE + c, { method: 'HEAD' });
+      sizes[c] = parseInt(r.headers.get('content-length') || '0', 10) || 25_000_000;
+    } catch { sizes[c] = 25_000_000; }
+    total += sizes[c];
+  }
 
-  await Promise.all(CHUNKS.map(async (c) => {
-    const r = await fetch(BASE + c);
+  // Скачиваем последовательно — прогресс настоящий
+  let loaded = 0;
+  for (const c of uncached) {
+    const r = await fetch(LLVM_BASE + c);
+    // Сразу кэшируем Response (его можно использовать только один раз)
+    const clone = r.clone();
+    cache.put(LLVM_BASE + c, clone);
+    // Читаем для прогресса
     const rd = r.body.getReader();
     while (true) {
       const { done, value } = await rd.read();
       if (done) break;
       loaded += value.length;
-      if (setProgress) setProgress(loaded, total, `⬇ LLVM ${Math.round(loaded / total * 100)}%`);
+      const pct = Math.round(loaded / total * 100);
+      if (setProgress) setProgress(pct, 100, `⬇ LLVM ${pct}%`);
     }
-  }));
-  if (setProgress) setProgress(total, total, '✅ LLVM загружен');
+  }
+  if (setProgress) setProgress(100, 100, '✅ LLVM загружен');
 }
 
 /**
