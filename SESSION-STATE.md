@@ -1,108 +1,90 @@
-# SystemC Constructor — обновление сессии
+# SystemC Constructor — состояние на 2026-09-26
 
-Дата: 2026-09-24 (продолжение). Рабочая директория: `/home/redcoon/work/systemc`
+## Главная цель ✅
+SystemC компилируется в WASM прямо в браузере (без сервера).
+Кольцевой регистр работает: `init() → reset → 1,2,4,8,1,2,4,8`
 
-## Исследование: @yowasp/clang (LLVM 22.1.0 в WASM)
+## Архитектура
 
-### Вывод: @yowasp/clang НЕ может собрать SystemC в WASM
+### Компиляция
+```
+main.cc (user code + wrapper) + sc_ids.o + systemc-core.o
+    → clang++ (@yowasp/clang, LLVM 22 in WASM, 105 MB)
+    → module.wasm (2.6 MB)
+```
 
-**Причина:** @yowasp/clang (clang 22 в WASM через YoWASP) включает в ресурс-тар только:
-- libc++ headers (`/usr/include/c++/v1/`)
-- clang builtin headers
+### Артефакты (предсобраны, лежат в app/)
+- `sc_ids.o` — SC_ID_* definitions (sc_utils_ids.cpp отдельно)
+- `systemc-core.o` — все 83 .cpp SystemC (исключены корутины)
+- `systemc-vfs.json` — дерево заголовков для VFS
 
-Но **НЕ включает wasi-libc** (заголовки C-библиотеки: `math.h`, `stdlib.h`, `stdio.h` и т.д.).
-При компиляции `<cmath>` → libc++ ищет `<math.h>` → не находит в ресурс-таре →
-фолбечится на glibc хоста (в данном случае `/usr/include/math.h`) →
-Feature-тесты (FP_NAN, FP_INFINITE) не проходят для WASI-target → ошибки компиляции.
+### WASI
+- `@yowasp/clang` для `--target=wasm32-wasip1` включает wasi-libc + libc++
+- Наша polyfill: полная таблица WASI preview1 (fd_write, fd_read, poll_oneoff...)
 
-### Ключевые находки
-1. **stdin через RunOptions, не через `files['stdin']`**: правильный API — `{stdin: (len) => Uint8Array|null}`
-2. **stdin-режим отличается от named-file**: `clang++ -x c++ - unity.cc` даёт ошибку даже для простого `#include "systemc.h"`, а stdin (даже неправильно переданный) «проходил» — ложное срабатывание
-3. **VFS с вложенными деревьями работает**: `{ sysc: { kernel: { sc_event.cpp: ... } } }` успешно резолвит `#include "sysc/kernel/sc_event.cpp"`
-4. **Бинарные файлы в VFS через Uint8Array не работают**: .a/.o файлы clang пытается парсить как C++ код
-5. **`-nostartfiles -nodefaultlibs`** позволяют линковать WASM без libc (если код их не использует), но SystemC активно использует `operator new`, `std::vector`, `std::cout` и т.д.
+### WASM-заглушки
+- **Корутины:** `sc_cor_wasm.h/.cpp` — пустая реализация `sc_cor_pkg`
+- **Исключения:** `__cxa_*` stubs с корректными Itanium ABI сигнатурами
 
-### Что нужно для работы SystemC в браузере через @yowasp/clang
-- wasi-libc заголовки (`math.h`, `stdlib.h`, ...) — либо в ресурс-таре, либо в VFS
-- runtime-библиотеки: `libc.a`, `libc++.a`, `libc++abi.a`, `libclang_rt.builtins.a`
-- Эти библиотеки можно собрать отдельно под wasm32-wasi
+### Cache API
+- LLVM чанки (4 × ~26 MB) кэшируются в `caches.open('llvm-chunks-v1')`
+- При повторной загрузке страницы — 0% трафика, «✅ LLVM (из кэша)»
 
-## План B: emscripten (работает, известная проблема)
+## Визуальный конструктор
 
-Emscripten 4.0.9 установлен (`~/.pixi/envs/default/lib/emscripten-4.0.9/em++`).
-Имеет полноценный wasm-тулчейн с libc (musl) и libc++.
+### Элементы палитры
+| Элемент | Пины | Описание |
+|---|---|---|
+| Clock | → clk | Тактовый генератор (toggles each step) |
+| VCC | → y | Постоянная 1 |
+| GND | → y | Постоянная 0 |
+| AND/OR/NOT/NAND/NOR/XOR | a,b → y | Базовые вентили |
+| D-FF | clk,d,rst_n → q,qn | Триггер с детекцией rising edge |
+| Ring Ctr | clk,rst_n,enable → q0..q3 | Кольцевой регистр |
+| Counter | clk,rst_n,enable → q0..q3 | 4-битный счётчик |
+| MUX 2→1 / MUX 4→1 | sel,... → y | Мультиплексоры |
+| Half Add | a,b → sum,carry | Полусумматор |
+| SysC | clk,rst_n,enable → q0..q3 | Скомпилированный WASM-модуль |
 
-### Предыдущая попытка
-`em++ ... -s STANDALONE_WASM -o ring_counter_emcc.wasm` скомпилировалась успешно,
-но упала на `wasm-opt` (бинарный оптимизатор был версии 117, emscripten ожидал 123).
+### Детекция фронта
+- SimEngine.step(): Clock toggle → propagation → delta cycles
+- Все элементы детектят `inp._prevInputs.clk === 0 && inp.clk === 1`
+- `rst_n` — сброс по спадающему фронту (1→0)
+- `isSequential` / `_clockEdgeFn` удалены
 
-Фикс: `-s WASM_OPT=0 -s ERROR_ON_WASM_OPT=0`
+### Персистентность
+- Схема + WASM-бинарники (base64) в localStorage
+- После перезагрузки WASM реинстанциируется, _evaluateFn восстанавливается
 
-### Предсобранные артефакты
-- `build-wasm/src/libsystemc.a` — SystemC, собранный Emscripten для wasm32-emscripten
-- `ring_counter.wasm` / `ring_counter.js` — первая рабочая сборка
-- `wasm_main.cpp` — интерактивная обёртка (init/step/reset_ring/get_q/set_enable)
+## Файлы
 
-## Файлы, добавленные в этой сессии
+### Приложение
+| Файл | Строк |
+|---|---|
+| `app/index.html` | 67 |
+| `app/main.js` | ~295 |
+| `app/compiler.js` | ~325 |
+| `app/elements.js` | ~350 |
+| `app/constructor.js` | 450 |
+| `app/wasi.js` | 61 |
+| `app/persistence.js` | 119 |
+| `app/style.css` | 147 |
+
+### Инфраструктура
 | Файл | Назначение |
 |---|---|
-| `build-unity.mjs` | unity-подход через @yowasp/clang (не работает из-за FP_NAN) |
-| `build_systemc.mjs` | правильный stdin-подход через RunOptions (FP_NAN блокер) |
-| `test-minimal.mjs` | тест минимального stdin (работает без systemc.h) |
-| `test-header-compile.mjs` | тест VFS headers (не использовался) |
-| `test-incremental.mjs` | тест с добавлением VFS по частям |
-| `test-full.mjs` | тест с полным VFS дерева |
-| `test-vendor.mjs` | тест с vendor/ поддиректорией |
-| `test_minimal.mjs` | минимальный успешный тест @yowasp/clang |
-| `test_stdin.wasm` | валидный .wasm (простая C++ функция, 392 байта) |
-| `ring_counter_yowasp.o / .wasm` | промежуточные артефакты @yowasp/clang |
+| `build-artifacts.mjs` | Сборка .o + vfs.json |
+| `build-core.mjs` | Быстрая пересборка systemc-core.o |
+| `test-pipeline.mjs` | Сквозной тест |
+| `pixi.toml` | pixi run build-artifacts, serve-web |
 
-## Следующий шаг
-Скомпилировать кольцевой регистр через emscripten:
+## Команды
 ```bash
-em++ -std=c++17 -o ring_counter_emcc.wasm wasm_main.cpp \
-  -L build-wasm/src -lsystemc \
-  --no-entry -s STANDALONE_WASM -s WASM_OPT=0 \
-  -s EXPORTED_FUNCTIONS='[_init,_step,_reset_ring,_get_q,_set_enable]' \
-  -I systemc-src/src -O2 -fvisibility=default -fno-threadsafe-statics
+pixi run serve-web        # python3 http.server :8080
+node build-artifacts.mjs  # пересобрать .o + vfs.json
+node test-pipeline.mjs    # сквозной тест компиляции + линковки
 ```
-Проверить: `node --input-type=module -e "WASI instantiation + init/step тесты"`
----
 
-## 2026-09-24 (поздняя правка): SystemC в браузере через @yowasp/clang — подтверждён фикс
-
-**Проверено:** добавление `-fvisibility=default` к clang args **убирает** `undefined SC_ID_*`
-при линковке unity-сборки SystemC (через runClang/@yowasp/clang).
-
-### Как собрать полностью (план, проверен частично)
-1. VFS-дерево: `{ sysc: buildTree('systemc-src/src/sysc'), 'systemc.h': ..., 'systemc': ... }`
-   (VFS-ключи со слэшами НЕ работают; вложенные объекты — работают)
-2. unity.cc = все `sysc/.../*.cpp` через `#include "sysc/.../x.cpp"` + main.cc (юзер + обёртка)
-   — ИСКЛЮЧИТЬ sc_cor_*.cpp (не нужны для SC_METHOD)
-3. `clang++ -std=c++17 unity.cc -o out.wasm -Wl,--no-entry,--export=init,... 
-   --target=wasm32-wasip1 -I. -fvisibility=default -DSC_USE_PTHREADS -fno-threadsafe-statics -O2`
-
-### Проблема: были undefined
-- `__cxa_allocate_exception` / `__cxa_throw` → нужны stubs (наработки в SESSION-LOG.md):
-  ```c
-  extern "C" {
-    void* __cxa_allocate_exception(size_t s){ return malloc(32); }
-    void __cxa_throw(void* a, void* b, void (*c)(void*)){ (void)a;(void)b;(void)c; abort(); }
-  }
-  ```
-- `sc_module_registry`, `sc_ppq_base`, `sc_plist_base` → это просто не включённые .cpp
-  (sc_module_registry.cpp, sc_export.cpp, utils/sc_pq.cpp, utils/sc_list.cpp). Взять ВСЕ .cpp.
-
-### Обходной вариант (быстрее, рекомендуют для следующего агента)
-Скомпилировать SystemC ОДИН раз предварительно в `systemc-unity.o`:
-```bash
-clang++ -c unity.cc -o systemc-unity.o ... -fvisibility=default   # 1.5 МБ (работает)
-```
-а юзер-код: `clang++ -c main.cc -o main.o ...` + линковка:
-```js
-import { runLLVM } from '@yowasp/clang';   // да, экспортирует runLLVM c 'wasm-ld'!
-await runLLVM(['wasm-ld','--no-entry','--export=init',...,'u.o','m.o','-o','out.wasm'], { file tree });
-```
-Это убирает повторную полную компиляцию SystemC на каждый запрос.
-
-**Урок:** не тратить время на clang 8 / CDN wasm-clang@0.0.1; готовый @yowasp/clang 22 + деревянная VFS + fvisibility=default решает SystemC в браузере.
+## Известные проблемы
+1. `sc_start()` в `init()` → memory access out of bounds (обход: deferred to step/reset)
+2. Clock → SysC end-to-end не тестирован после последнего фикса `_prevInputs`

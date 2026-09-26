@@ -1,142 +1,178 @@
-# SystemC Constructor — Подробный лог сессии
+# SystemC Constructor — Лог сессии 2026-09-26
 
-Хроника от начала переписки, включая тупиковые ветки.
+Хроника: рефакторинг, починка SC_ID_*, корутины, Clock-элемент, персистентность.
 Git-коммиты в master отражают ключевые вехи.
 
 ---
 
-## 1. Установка SystemC через pixi
-- Проверили: `pixi 0.76.2` установлен в `~/.pixi/bin`.
-- `pixi search systemc` → conda-forge: **systemc 3.0.2** (заголовки systemc.h/systemc, libsystemc.so, doc).
-- Создали `pixi.toml` (workspace `systemc-ring-counter`, канал conda-forge, linux-64).
-- `pixi install` → сработал (первые 2 раза валился из-за read-only закэша
-  `/home/redcoon/.cache/rattler` — позже научились переопределять `XDG_CACHE_HOME`/`RATTLER_CACHE_DIR`).
-- Написали **кольцевой регистр** на SystemC: `ring_counter.h` (SC_MODULE, sc_in/sc_out,
-  SC_METHOD shift_proc) + `tb_ring_counter.h` + `main.cpp`.
-- Собрали и запустили нативно: `pixi run build` → симуляция дала
-  `1,2,4,8,1,2,4,8` — PASSED.
+## 1. Рефакторинг index.html (503 → 66 строк)
+- Монолитный `app/index.html` (503 строки, стили + Monaco + WASI + компиляция + persistence) разбит на модули:
+  - `app/style.css` — все стили
+  - `app/wasi.js` — WASI preview1 polyfill (полная таблица импортов)
+  - `app/compiler.js` — компиляция C++/SystemC → WASM через `@yowasp/clang`
+  - `app/persistence.js` — localStorage save/load схемы
+  - `app/main.js` — оркестрация Monaco/SimEngine/Viz/кнопки/клавиатура
+  - `app/index.html` — только HTML-скелет
 
-## 2. Первый вопрос про «графическую обёртку»
-- Пользователь: статическое веб-приложение для визуализации.
-- Я предложил варианты: WASM-порт SystemC / чистый JS-визуализатор / React.
-- Пользователь уточнил: интересует реальный C++ в браузере, «через понятие WASM».
+- Monaco-пример исправлен: `#include "systemc.h"` (кавычки, а не `<>`)
+- Убрана бажная нормализация `#include "sysc/..."` → `"..."`
 
-## 3. Сборка SystemC в WASM через Emscripten (рабочая ветка!)
-- Поставили **emscripten 4.0.9** через pixi (в тот же env).
-- `emcmake cmake ../systemc-src -DBUILD_SHARED_LIBS=OFF` → `emmake make` → **libsystemc.a (wasm)**.
-- Написали `wasm_main.cpp` (интерактивная обёртка: `extern "C" init/reset_ring/step/get_q/set_enable`,
-  SC_METHOD для кольцевого регистра).
-- `emcc ... -sINVOKE_RUN=0 -sNO_EXIT_RUNTIME` → `ring_counter.js` + `ring_counter.wasm`.
-- Проверка в Node: `[1,2,4,8,1,2,4,8]` — **PASSED**. Это первая работающая связка «SystemC в WASM».
-- Сделали `shell.html` — веб-страница с 4 битами + кнопки Step/Run/Reset + мини-диаграмма.
+**Коммит:** `625750d refactor: split monolithic index.html into modules`
 
-## 4. Идея конструктора «из готовых элементов + Monaco»
-- Пользователь: универсальный конструктор, кастомные элементы через Monaco.
-- Проговорили: статический веб без сервера vs с компиляцией.
-- Я начал строить SPA: `app/index.html` + `app/elements.js` + `app/constructor.js`.
+## 2. Сборка systemc-unity.o — проблема SC_ID_* и корутин
 
-## 5. Попытка in-browser компиляции C++ (тупик 1: wasm-clang 8.0.1)
-- Искали clang.wasm для браузера.
-- Нашли `@eduoj/wasm-clang` (CDN `wasm-clang@0.0.1`, clang **8.0.1**, lld 8.0.1).
-- Пытались скомпилировать SystemC через clang -cc1 + wasm-ld в браузере.
-- Проблемы (убившие ветку):
-  - `Cannot select: AtomicLoad` — clang 8.0.1 backend не умеет атомики
-    (thread-safe static init), нужен `-fno-threadsafe-statics`.
-  - `undefined symbol: __cxa_*` — CDN-ный libc++abi 2019 без исключений.
-  - `Bad section type` у `wasm-ld 8` на объектах нового формата (DATACOUNT).
-- Вывод: старый тулчейн из CDN сломан, чинить нереально.
+### Попытка unity-сборки
+- `build-artifacts.mjs` — скрипт генерации `systemc-vfs.json` + `systemc-unity.o`
+- SystemC 3.0.2, `--target=wasm32-wasip1`, `-fvisibility=default`
+- `__cxa_*` stubs для исключений (Itanium ABI)
+- Исключены `sc_cor_pthread.cpp` / `sc_cor_qt.cpp` (не нужны для SC_METHOD)
 
-## 6. Конструктор и Monaco (работает, но были фиксы)
-- Собрали палитру (AND/OR/NOT/NAND/NOR/XOR/DFF/RING4/COUNTER4/MUX2/MUX4/HALF_ADDER),
-  SVG-канва, соединения, drag&drop, удаление через Delete, localStorage.
-- Баги исправлены:
-  - CommonJS `module.exports` → ES `export` (палитра была пустой).
-  - `Symbol` в dataset → строка (перетаскивание).
-  - Дубль `let monacoEditor` (SyntaxError redeclaration).
-  - Табы (рекламировали) убраны → Monaco просто виден.
-  - JS-кнопка удалена (пользу требовал только C++).
-- `pixi run serve-web` → http://127.0.0.1:8080/app/index.html.
+### Include guard баг
+- `sc_utils_ids.cpp` определяет SC_ID_* константы через `#define SC_DEFINE_MESSAGE`
+- В unity-сборке `systemc.h` включает `sc_kernel_ids.h` ПЕРВЫМ → include guard
+- `sc_utils_ids.cpp` не может пере-включить заголовки с DEFINITION-формой
+- **Фикс:** компилировать `sc_utils_ids.cpp` отдельно в `sc_ids.o`
 
-## 7. Сборка libsystemc под WASI (тупик 2: clang 8 + кривые libc)
-- Для браузерной компиляции нужен был `.o/.a` под wasm32-wasi (не emscripten).
-- Скачали WASI sysroot из CDN (wasm-clang@0.0.1/bin/sysroot.tar).
-- `build-wasi.sh` (clang 21 из pixi) → много ошибок:
-  - `pthread.h not found` → сделали заглушку pthread.h в был-sysroot.
-  - без `-fno-threadsafe-statics` → атомики.
-  - `sc_cor_pthread.cpp` тянул pthread API → заглушка корутин.
-  - `sc_cor_qt.cpp` тянул QuickThreads → заглушка qt.
-  - `Bad section type` (DATACOUNT) — даже libsystemc от clang 8 линкуется
-    только былъ-ld 8 (см. п.5).
-- Дальше: собранный нами `libc++ 8.0.1` не собирался (cstring/memcpy include-проблемы,
-  `#include_next` не находил `<string.h>`), а CDN-ный libc++ имел сигнатурные конфликты
-  (`ios.cpp` vs `iostream.cpp`) — modern валидатор (wasmer) ловил `type mismatch`.
-- **Тупик.** Даже clang 8 + был-ld 8 + свои libc не давали стабильной картинки.
-- Бонус из тупика: установили **wasmer** (бинарник с GitHub), и он подтвердил:
-  `event/sc_start` в SystemC работают с полным WASI, значит у нас были проблемы
-  из-за кривого libc++, не SystemC.
+### Корутины
+- `-DSC_USE_PTHREADS` тянет `sc_cor_pthread.h` → `<pthread.h>` не существует для WASI
+- Без `SC_USE_PTHREADS` → `sc_cor_qt.h` → QuickThreads (setjmp/longjmp, нет для WASM)
+- **Решение:** своя заглушка `sc_cor_wasm.h` / `sc_cor_wasm.cpp` — `sc_cor_pkg_wasm` с пустыми методами
+- Патчинг `sc_simcontext.cpp` в VFS: заменяем `#include "sc_cor_pthread.h"` и др. на `#include "sc_cor_wasm.h"`
 
-## 8. Микросервис (рабочая ветка 2)
-- Написали `compile-server.mjs`: POST /compile {code,name} → компиляция через pixi env
-  (emcc + libsystemc.a) → возврат {wasm base64, js}.
-- Чинили:
-  - spawn вместо execSync (не блокировать).
-  - `-s EXPORTED_FUNCTIONS=[...]` через массив аргументов (кавычки).
-  - `int sc_main(){...}` для линковки (иначе `undefined symbol: sc_main`).
-  - был-opt несовместим → заглушка wasm-opt ({1..priority}) и `SINGLE_FILE=1`.
-- Итог: SystemC кольцевой регистр через микросервис — `[1,2,4,8]` PASSED
-  (полноценный SystemC, интерактивные шаги).
+### Схема артефактов
+- `app/sc_ids.o` (35 KB) — SC_ID_* definitions (sc_utils_ids.cpp)
+- `app/systemc-core.o` (1.4 MB) — всё остальное (83 .cpp, без coroutines)
+- `app/systemc-vfs.json` (2.6 MB) — дерево заголовков для VFS
 
-## 9. Аренда сервера для сборки свежего clang.wasm (тупик 3)
-- Пользователь арендовал VPS (14 ядер, 62 ГБ), дал ключ `id_ed25519_fuxi`.
-- Развернули pixi+emscripten, клонировали LLVM (через Gitee из-за медленного GitHub),
-  запустили сборку.
-- Шквал CMake-ошибок: libstdc++ check, атомики, shared-libs (LTO/clang-shlib),
-  TableGen — каждой добавлен флаг, но это бесконечная карусель.
-- Пользователь отключил сервер (не хотел платить), сборку прекратили.
+**Коммит:** `1caa79c feat: build-artifacts.mjs`
+**Коммит:** `cd38088 feat: персистентность WASM-элементов`
 
-## 10. Открытие: @yowasp/clang (решение!)
-- Пользователь скинул `https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/bundle.js`.
-- Пиф: `@yowasp/clang@22.0.0-git...` — **полный LLVM/Clang/LLD 22, собранный whitequark в WASM**,
-  105 МБ unpacked. Доступен в браузере и Node.
-- Читаем README: API `runClang(args, filesIn, options)`, VFS filesIn (строки/Uint8Array/деревья),
-  returns filesOut. При ненулевом exit бросает `Exit` c `.files`.
-- Голый C++ пример с `iostream` — **работает** (sysroot встроен).
+## 3. Первый успешный тест кольцевого регистра
 
-## 11. Попытки SystemC через runClang (тупик 4 → почти прорыв)
-- `#include <systemc.h>` — clang его не находил.
-- Пробовали "гните заголовки" в VFS (плоско) — не находил include-файлы.
-- Пробовали вложенные объекты VFS (`{sysc:{kernel:{...}}}`) — **нашлось!**
-  Ключи со слэшами не работают, а деревья работают.
-- unity.cc = `#include "sysc/.../foo.cpp"` для всех .cpp + юзер-код:
-  - компиляция проходит (warning SC_DEFINE_MESSAGE redefine),
-  - линковка: `undefined sc_core::SC_ID_GEN_UNIQUE_NAME_` и др.
-- Нашли в отладочном выводе cc1: `-fvisibility=hidden`, поэтому константы
-  не видит был-ld. **Фикс не проверен:** `-fvisibility=default` или `-Wl,--export-dynamic`.
-- Текущее состояние index.html: ветка SystemC грузит unity.o + VFS json (старый путь),
-  но фактически рабочий путь — добавить `-fvisibility=default` и деревянную VFS.
+- `test-pipeline.mjs` — сквозной тест: компиляция + линковка + инстанциирование
+- `systemc-core.o + sc_ids.o + main.cc → module.wasm` (2.6 MB)
+- `init() → OK, reset → q=1, step 1..8 → 1,2,4,8,1,2,4,8 ✅`
+- **Ключевой фикс:** `sc_start(SC_ZERO_TIME)` убран из `init()` → deferred to `step()`/`reset_ring()`
+- `__cxa_begin_catch` — правильная сигнатура `void*` (была `void` → mismatch)
+- `-fno-exceptions` для пользовательского кода
+- `--initial-memory=33554432` (32 MB)
 
-## 12. Завершение сессии
-- Создан `SESSION-STATE.md` (краткое состояние) и этот `SESSION-LOG.md`.
-- Зафиксированы коммиты в git (история в логе коммитов).
+**Коммит:** `09a5e74 feat: SystemC → WASM в браузере — кольцевой регистр работает!`
+
+## 4. Прогресс-бар загрузки LLVM
+
+- `prefetchLLVM()` — предзагрузка 4 WASM-чанков yowasp (105 MB) с прогрессом
+- **Cache API:** `caches.open('llvm-chunks-v1')` — чанки сохраняются между перезагрузками
+- Скачивание последовательное (не `Promise.all`) — точный прогресс без race condition
+- `setProgress(pct, 100, label)` — DOM-прогресс-бар в лог-панели
+
+**Коммит:** `8df0e86 feat: прогресс-бар загрузки LLVM`
+
+### Баги и фиксы
+- `RangeError: source array is too long` — `String.fromCharCode(...Uint8Array)` падает на 2.6 MB
+  → **фикс:** разбивка на чанки по 8 KB
+- `RangeError: too many function arguments` — то же в persistence.js при base64
+  → **фикс:** chunk-encoding
+
+**Коммит:** `4e9eef3 fix: RangeError source array too long`
+**Коммит:** `43e5150 fix: RangeError too many function arguments`
+
+## 5. Clock-элемент + pin-level edge detection
+
+### Проблема: глобальный такт
+- Раньше: SimEngine дёргал `clockEdge('pos')` для ВСЕХ sequential элементов
+- Пользователь хотел ВИЗУАЛЬНЫЙ Clock-элемент на канве
+
+### Решение: детекция фронта по пинам
+- **Clock** — новый элемент в палитре (выход `clk`, переключается каждый step)
+- **SimEngine.step()** переработан:
+  1. Сохраняем `el.inputs._prevInputs = {...el.inputs}`
+  2. Clock-элементы переключаются
+  3. Пропагация Clock-изменений по соединениям
+  4. Дельта-циклы (Clock исключён)
+  5. Все элементы детектят rising edge через `inp._prevInputs.clk === 0 && inp.clk === 1`
+- **VCC** (1) и **GND** (0) — константы для подтяжки enable/rst_n
+- `rst_n` — сброс по спадающему фронту (1→0), не по статическому 0
+- `isSequential` / `_clockEdgeFn` удалены
+
+### Баги и фиксы
+- `_prevInputs` сохранялся в `el._prevInputs`, а evaluate читал из `inp._prevInputs` (= `this.inputs._prevInputs`) → разные объекты, фронт не детектился
+  → **фикс:** `el.inputs._prevInputs = {...el.inputs}`
+- Clock участвовал в дельта-циклах → переключался 20 раз за step → phase всегда 0
+  → **фикс:** `if (el._isClock) continue;` в дельтах
+
+**Коммит:** `d87367d feat: Clock-элемент + pin-level edge detection`
+**Коммит:** `8010bfc fix: _prevInputs сохранялся на el, а читался с inp`
+**Коммит:** `f4e59b2 fix: Clock не должен участвовать в дельта-циклах`
+
+## 6. Пины SysC-элемента
+
+- Входы: `clk`, `rst_n`, `enable` (было `in0..in7`)
+- Выходы: `q0`, `q1`, `q2`, `q3` (было `out0..out3`)
+- Обработка reset по спадающему фронту `rst_n`
+- Детекция rising edge на `clk`
+
+## 7. Персистентность WASM-элементов
+
+- `saveState()` — base64-кодирует все `_wasmBinary` и хранит в localStorage
+- `loadState()` — декодирует, реинстанциирует WASM, восстанавливает `_evaluateFn`
+- `restoreWasmExports(base64)` — `export` из `compiler.js`
+- Схема с SysC-элементом восстанавливается после перезагрузки
+
+**Коммит:** `cd38088 feat: персистентность WASM-элементов`
 
 ---
 
-## Полезные «заповеди» из этой сессии
-1. **Инструменты:**
-   - Браузерный C++/SystemC-компилятор → `@yowasp/clang` (LLVM 22).
-   - `runClang` VFS: только деревья объектов (не flat-ключи со слэшами).
-   - Ненулевой exit → бросает `Exit` с `.files` (там stderr/вывод).
-2. **SystemC:**
-   - SC_THREAD/wait() не работают в WASI — только SC_METHOD.
-   - Константы SC_ID_* требуют видимости (fix: `-fvisibility=default`).
-3. **Emscripten (для сервера/сборки .wasm):** работает стабильно,
-   но выдаёт свой ABI (env-импорты), не WASI.
-4. Старый CDN `wasm-clang@0.0.1` + clang 8 — мусор, не тратить время.
-5. Собирать LLVM в WASM вручную — дни работы; не нужно, есть готовый @yowasp/clang.
+## Текущее состояние
 
-## Куда дальше (по приоритету)
-1. В index.html: для SystemC использовать деревянную VFS + unity.cc + `-fvisibility=default`.
-2. Проверить линковку SC_ID_*; если ок — инстанцировать wasm и вешать на канву.
-3. Если fvisibility не поможет — альтернатива: `-Wl,--export-dynamic`, либо
-   определить SC_ID через макрос SC_DEFINE_MESSAGE с текстом (как делает sc_utils_ids.cpp).
-4. Отдельно: микросервис compile-server.mjs всё ещё рабочий fallback на сервер.
+### ✅ Работает
+1. **Компиляция SystemC → WASM в браузере** через `@yowasp/clang` (LLVM 22, 105 MB)
+2. **Кольцевой регистр** — 1→2→4→8→1... в WASM через `sc_start()`
+3. **Прогресс-бар** загрузки LLVM (Cache API — не качается повторно)
+4. **Clock-элемент** на канве — соединение проводами к `clk` входу
+5. **VCC/GND** — константы для enable/rst_n
+6. **Персистентность** — схема + WASM сохраняются в localStorage
+7. **Пины** — осмысленные имена (`rst_n`, `enable`, `q0..q3`)
+
+### ❌ Известные проблемы
+- `sc_start()` в `init()` вызывает `memory access out of bounds` (обход: deferred to step/reset)
+- Схема с Clock → SysC не тестировалась end-to-end после последнего фикса `_prevInputs`
+
+### Файловая структура приложения
+
+| Файл | Назначение |
+|---|---|
+| `app/index.html` | HTML-скелет (67 строк) |
+| `app/main.js` | Оркестрация: Monaco, SimEngine, кнопки |
+| `app/compiler.js` | Компиляция C++/SystemC → WASM |
+| `app/elements.js` | SimEngine, LogicElement, GATES (Clock, VCC, GND...) |
+| `app/constructor.js` | SVG-канва, drag & drop, соединения |
+| `app/wasi.js` | WASI preview1 polyfill |
+| `app/persistence.js` | localStorage save/load (включая WASM) |
+| `app/style.css` | Все стили |
+| `app/sc_ids.o` | SC_ID_* definitions (35 KB) |
+| `app/systemc-core.o` | SystemC без coroutines (1.4 MB) |
+| `app/systemc-vfs.json` | Дерево заголовков (2.6 MB) |
+
+### Инфраструктура сборки
+
+| Файл | Назначение |
+|---|---|
+| `build-artifacts.mjs` | Генерация `.o` + `vfs.json` из `app/systemc-src/` |
+| `build-core.mjs` | Быстрая пересборка `systemc-core.o` |
+| `test-pipeline.mjs` | Сквозной тест компиляции + линковки |
+| `pixi.toml` | pixi-таски: `build-artifacts`, `serve-web` |
+
+### Git-лог (текущая сессия)
+```
+625750d refactor: split monolithic index.html into modules
+1caa79c feat: build-artifacts.mjs — генерация systemc-vfs.json и systemc-unity.o
+09a5e74 feat: SystemC → WASM в браузере — кольцевой регистр работает!
+8df0e86 feat: прогресс-бар загрузки LLVM в консоли приложения
+4e9eef3 fix: RangeError source array too long при загрузке LLVM
+cd38088 feat: персистентность WASM-элементов в localStorage
+43e5150 fix: RangeError too many function arguments при base64 WASM
+d87367d feat: Clock-элемент + pin-level edge detection
+8010bfc fix: _prevInputs сохранялся на el, а читался с inp
+f4e59b2 fix: Clock не должен участвовать в дельта-циклах
+```
