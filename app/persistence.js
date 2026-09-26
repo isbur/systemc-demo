@@ -16,12 +16,17 @@ export function saveState(viz, sim) {
     wasmModules: {},
   };
 
-  // Собираем WASM-бинарники с элементов
+  // Собираем WASM-бинарники с элементов (base64 по частям)
   for (const [uid, view] of viz.elementViews) {
     if (view.el._wasmBinary) {
-      const buf = view.el._wasmBinary;
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-      data.wasmModules[uid] = base64;
+      const bytes = new Uint8Array(view.el._wasmBinary);
+      const CHUNK = 8192;
+      let parts = [];
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        const end = Math.min(i + CHUNK, bytes.length);
+        parts.push(String.fromCharCode(...bytes.subarray(i, end)));
+      }
+      data.wasmModules[uid] = btoa(parts.join(''));
     }
   }
 
