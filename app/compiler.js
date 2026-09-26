@@ -105,6 +105,37 @@ async function instantiateWasm(wasmBuf, log) {
   return ex;
 }
 
+// ═══ Предзагрузка WASM-чанков LLVM ═══════════════════════════════
+
+async function prefetchLLVM(setProgress) {
+  const CHUNKS = [
+    'llvm.core.wasm', 'llvm.core2.wasm',
+    'llvm.core3.wasm', 'llvm.core4.wasm',
+  ];
+  const BASE = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/';
+  let total = 0, loaded = 0;
+
+  const sizes = await Promise.all(CHUNKS.map(async (c) => {
+    try {
+      const r = await fetch(BASE + c, { method: 'HEAD' });
+      return parseInt(r.headers.get('content-length') || '0', 10) || 25_000_000;
+    } catch { return 25_000_000; }
+  }));
+  total = sizes.reduce((a, b) => a + b, 0);
+
+  await Promise.all(CHUNKS.map(async (c) => {
+    const r = await fetch(BASE + c);
+    const rd = r.body.getReader();
+    while (true) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      loaded += value.length;
+      if (setProgress) setProgress(loaded, total, `⬇ LLVM ${Math.round(loaded / total * 100)}%`);
+    }
+  }));
+  if (setProgress) setProgress(total, total, '✅ LLVM загружен');
+}
+
 /**
  * Компиляция кода пользователя с линковкой к предсобранному systemc-unity.o.
  * Загружаем @yowasp/clang, unity.o, VFS-заголовки, компилируем main.cc, линкуем.
@@ -114,46 +145,7 @@ async function compileSystemC(code, deps) {
 
   setStatus('⏳ Загрузка компилятора...');
   log('⏳ Предзагрузка LLVM (105 MB)...', 'info');
-
-  // Фаза 1: предзагружаем WASM-чанки yowasp с прогрессом (0-70%)
-  const CHUNKS = [
-    'llvm.core.wasm',
-    'llvm.core2.wasm',
-    'llvm.core3.wasm',
-    'llvm.core4.wasm',
-  ];
-  const BASE = 'https://cdn.jsdelivr.net/npm/@yowasp/clang/gen/';
-  let totalBytes = 0;
-  let loadedBytes = 0;
-
-  // Сначала узнаем размеры чанков (HEAD-запросы)
-  const sizes = await Promise.all(CHUNKS.map(async (chunk) => {
-    try {
-      const resp = await fetch(BASE + chunk, { method: 'HEAD' });
-      return parseInt(resp.headers.get('content-length') || '0', 10) || 25_000_000;
-    } catch { return 25_000_000; } // ~25 MB fallback
-  }));
-  totalBytes = sizes.reduce((a, b) => a + b, 0);
-
-  // Загружаем с прогрессом
-  const chunkPromises = CHUNKS.map(async (chunk, i) => {
-    const resp = await fetch(BASE + chunk);
-    const reader = resp.body.getReader();
-    const buf = new Uint8Array(sizes[i]);
-    let pos = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf.set(value, pos);
-      pos += value.length;
-      loadedBytes += value.length;
-      setProgress(loadedBytes, totalBytes, `⬇ LLVM ${Math.round(loadedBytes / totalBytes * 100)}%`);
-    }
-    return buf;
-  });
-  await Promise.all(chunkPromises);
-  setProgress(totalBytes, totalBytes, '✅ LLVM загружен');
-
+  await prefetchLLVM(setProgress);
   log('✅ LLVM загружен', 'info');
   setStatus('⏳ Загрузка артефактов...');
 
@@ -221,9 +213,10 @@ async function compilePlainCpp(code, deps) {
   const { log, setStatus, setProgress } = deps;
   const safeProgress = setProgress || (() => {});
 
-  safeProgress(70, 100, '⏳ Загрузка LLVM...');
-  log('⏳ Загрузка LLVM 22...', 'info');
+  safeProgress(0, 100, '⏳ Загрузка LLVM...');
+  log('⏳ Предзагрузка LLVM (105 MB)...', 'info');
   setStatus('⏳ LLVM...');
+  await prefetchLLVM(setProgress);
 
   const clangMod = await clangPromise;
   const { runClang } = clangMod;
