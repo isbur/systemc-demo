@@ -72,12 +72,12 @@ int32_t step() {
     clk_sig = true;
     sc_start(sc_core::SC_ZERO_TIME);
 
-    int32_t val = static_cast<int32_t>(q_sig.read().to_int());
-
     // Toggle clock high -> low
     clk_sig = false;
     sc_start(sc_core::SC_ZERO_TIME);
 
+    // q updated in the delta update phase, read its current value
+    int32_t val = static_cast<int32_t>(q_sig.read().to_int());
     return val;
 }
 
