@@ -155,10 +155,12 @@ export async function loadState(viz, sim, log, wasmRestorer) {
     }
 
     viz.deserialize(data.viz);
-    sim.deserializeConnections(data.connections || [], (uid) => {
-      const view = viz.elementViews.get(String(uid));
-      return view ? view.el : null;
-    });
+    // Новый формат кладёт провода в viz.links. Старые сохранения — только в connections.
+    // Оба списка одинаковые: { fromUid, fromPin, toUid, toPin }. Граф сам наполняет SimEngine.
+    const wires = Array.isArray(data.viz.links)
+      ? data.viz.links
+      : (Array.isArray(data.connections) ? data.connections : []);
+    viz.restoreWires(wires);
 
     if (wasmRestorer) {
       for (const element of data.viz.elements) {

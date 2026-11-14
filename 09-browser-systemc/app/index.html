@@ -37,9 +37,13 @@
     <div id="palette-list"></div>
   </div>
 
-  <!-- Canvas -->
+  <!-- Canvas: JointJS paper. Подсказка не перехватывает мышь. -->
   <div class="canvas-wrap" id="canvas-wrap">
-    <svg id="canvas-svg"></svg>
+    <div id="paper-host"></div>
+    <p class="wire-hint" id="wire-hint">
+      Соединение: потяните от выходного порта (кружок справа) к входному (кружок слева).
+      На вход — только один провод. Delete — удалить блок или провод.
+    </p>
   </div>
 
   <!-- Editor Panel -->
@@ -73,6 +77,8 @@
   <input id="stdin-input" autocomplete="off" spellcheck="false" placeholder="Строка уходит в stdin последнего модуля">
 </form>
 
+<!-- JointJS до Monaco: loader.js объявляет AMD define и иначе перехватит UMD-сборку. -->
+<script src="vendor/joint/joint.min.js"></script>
 <!-- Monaco AMD loader (должен быть до main.js, чтобы определить global require) -->
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 

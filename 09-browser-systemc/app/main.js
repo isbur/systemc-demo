@@ -4,6 +4,7 @@
  */
 import { SimEngine, GATES } from './elements.js';
 import { VisualConstructor } from './constructor.js';
+import { version as jointVersion } from './vendor/joint/joint.js';
 import { compileCpp, mountAutorunElement, restoreWasmSession } from './compiler.js';
 import { scheduleSave, loadState, loadSource } from './persistence.js';
 import { loadCells, cellSourceUrl } from './cells-runtime.js';
@@ -13,7 +14,7 @@ const logPanel     = document.getElementById('log-panel');
 const statusText   = document.getElementById('status-text');
 const cycleDisplay = document.getElementById('cycle-display');
 const paletteList  = document.getElementById('palette-list');
-const svg          = document.getElementById('canvas-svg');
+const paperHost    = document.getElementById('paper-host');
 
 // Buttons
 const btnCompile   = document.getElementById('btn-compile-cpp');
@@ -208,7 +209,7 @@ function initMonaco() {
 
 // ─── Визуальный конструктор ─────────────────────────────────────────
 function initVisualConstructor() {
-  viz = new VisualConstructor(svg, sim);
+  viz = new VisualConstructor(paperHost, sim);
 
   saveFn = scheduleSave(viz, sim, () => userModel?.getValue());
 
@@ -234,16 +235,28 @@ function buildPalette() {
   }
 }
 
+let suppressPaletteClick = false;
+
 function addPaletteItem(type, config) {
   const item = document.createElement('div');
   item.className = 'palette-item';
   item.draggable = true;
+  item.dataset.type = type;
+  item.title = 'Клик — на свободное место, или перетащите на канву';
   item.innerHTML = `<span class="dot" style="background:${config.color}"></span>
     <span class="label">${config.label}</span>
     <span class="pins">${config.inputPins.length}→${config.outputPins.length}</span>`;
   item.addEventListener('dragstart', (e) => {
+    suppressPaletteClick = true;
     e.dataTransfer.setData('text/plain', type);
     e.dataTransfer.effectAllowed = 'copy';
+  });
+  item.addEventListener('dragend', () => {
+    setTimeout(() => { suppressPaletteClick = false; }, 0);
+  });
+  item.addEventListener('click', () => {
+    if (suppressPaletteClick) return;
+    viz.addElement(type);
   });
   paletteList.appendChild(item);
 }
@@ -259,10 +272,8 @@ function initDragDrop() {
     e.preventDefault();
     const type = e.dataTransfer.getData('text/plain');
     if (!type || !GATES[type]) return;
-    const rect = svg.getBoundingClientRect();
-    const x = e.clientX - rect.left - 45;
-    const y = e.clientY - rect.top - 20;
-    viz.addElement(type, Math.max(0, x), Math.max(0, y));
+    const point = viz.clientToLocal(e.clientX, e.clientY);
+    viz.addElement(type, point.x - 50, point.y - 24);
   });
 }
 
@@ -322,11 +333,12 @@ function initKeyboard() {
         break;
       case 'Delete':
       case 'Backspace':
-        if (viz && viz.selectedId) {
+        if (!viz) break;
+        {
+          const removed = viz.deleteSelection();
+          if (!removed) break;
           e.preventDefault();
-          const deleted = viz.selectedId;
-          viz.deleteElement(deleted);
-          log(`Удалён элемент #${deleted}`, 'info');
+          log(removed === 'link' ? 'Удалён провод' : 'Удалён элемент', 'info');
         }
         break;
     }
@@ -397,10 +409,15 @@ async function boot() {
   initCompileButton();
   initStdin();
   initKeyboard();
-  initMonaco();
+  try {
+    initMonaco();
+  } catch (error) {
+    log('Monaco не загрузился: ' + error.message, 'err');
+  }
   await tryRestore();
-  setStatus('Готово. Перетащите элементы на канву');
-  log('Приложение загружено. Space — пуск/стоп, S — шаг, R — сброс', 'info');
+  setStatus('Готово. Клик — добавить блок, провод — от выхода к входу');
+  log(`Канва: JointJS ${jointVersion}`, 'info');
+  log('Клик добавляет блок на свободное место. Space — пуск/стоп, S — шаг, R — сброс, Delete — удалить', 'info');
 }
 
 boot();
