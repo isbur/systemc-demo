@@ -1,0 +1,61 @@
+# Статический редактор на GitHub Pages.
+# В артефакт попадает только то, что открывает браузер: относительные пути
+# от 09-browser-systemc/app/ сохраняются, wasi-sdk целиком не выкладывается.
+name: Deploy Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Собрать сайт
+        run: |
+          set -eu
+          dest=site/09-browser-systemc
+          mkdir -p "$dest/pthread-host"
+          cp wasi-include.json site/
+          cp -a 09-browser-systemc/app "$dest/app"
+          rm -rf "$dest/app/systemc-src"
+          cp -a \
+            09-browser-systemc/pthread-host/wasi.js \
+            09-browser-systemc/pthread-host/thread.js \
+            09-browser-systemc/pthread-host/systemc-core-pthread.o \
+            09-browser-systemc/pthread-host/sc_ids-pthread.o \
+            "$dest/pthread-host/"
+          cp -a 09-browser-systemc/pthread-host/wasi "$dest/pthread-host/wasi"
+          printf '%s\n' \
+            '<!DOCTYPE html>' \
+            '<meta charset="utf-8">' \
+            '<meta http-equiv="refresh" content="0; url=09-browser-systemc/app/index.html">' \
+            '<title>SystemC Constructor</title>' \
+            '<p><a href="09-browser-systemc/app/index.html">SystemC Constructor</a></p>' \
+            > site/index.html
+          touch site/.nojekyll
+
+      - name: Загрузить артефакт
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Опубликовать
+        id: deployment
+        uses: actions/deploy-pages@v4
