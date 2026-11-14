@@ -8,6 +8,7 @@ body {
   color: #e0e0e0;
   overflow: hidden;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -24,18 +25,71 @@ body {
 }
 .header h1 { font-size: 1.1rem; font-weight: 600; }
 .header .badge { font-size: 0.7rem; color: #888; }
+.header-actions { display: flex; align-items: center; gap: 10px; }
+.header-actions button {
+  background: #2a2a4a;
+  color: #e0e0e0;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.header-actions button:hover { background: #3a3a6a; }
 
-/* ─── Layout ─── */
-.main-layout { display: flex; flex: 1; overflow: hidden; }
+/* ─── Shell: Dockview или одна мобильная панель ─── */
+.shell { flex: 1; min-height: 0; position: relative; }
+#dock, #mobile-stage { position: absolute; inset: 0; }
+#mobile-stage { display: none; }
+body.mode-mobile #dock { display: none; }
+body.mode-mobile #mobile-stage {
+  display: flex;
+  flex-direction: column;
+}
+body.mode-mobile #mobile-stage > .panel-body {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+}
+#panel-pen { display: none; }
+#mobile-tabs { display: none; }
+
+.dock-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dv-content-container {
+  display: flex;
+  flex-direction: column;
+}
+.panel-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #111;
+}
+
+/* Подтянуть тёмную тему Dockview к палитре конструктора. */
+.dockview-theme-abyss {
+  --dv-sash-color: #2a2a44;
+  --dv-active-sash-color: #4fc3f7;
+  --dv-color-abyss-accent: #4fc3f7;
+}
+/* Панели не закрываются крестиком: сброс раскладки их возвращает, а случайный крестик убирает схему. */
+.dv-default-tab-action { display: none !important; }
 
 /* Left: Palette */
 .palette {
-  width: 140px;
   background: #16162a;
-  border-right: 1px solid #333;
   padding: 8px;
   overflow-y: auto;
-  flex-shrink: 0;
 }
 .palette h3 {
   font-size: 0.7rem;
@@ -63,9 +117,9 @@ body {
 .palette-item .pins { font-size: 0.6rem; color: #666; }
 
 /* Center: Canvas (JointJS paper) */
-.canvas-wrap { flex: 1; position: relative; background: #0d0d1a; overflow: hidden; }
-#paper-host { position: absolute; inset: 0; }
-#paper-host .joint-paper { background: #0d0d1a; }
+.canvas-wrap { flex: 1; min-height: 0; position: relative; background: #0d0d1a; overflow: hidden; }
+#paper-host { position: absolute; inset: 0; touch-action: none; }
+#paper-host .joint-paper { background: #0d0d1a; touch-action: none; }
 .wire-hint {
   position: absolute;
   left: 12px;
@@ -90,12 +144,7 @@ body {
 
 /* Right: Monaco */
 .editor-panel {
-  width: 360px;
   background: #1a1a2e;
-  border-left: 1px solid #333;
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
 }
 .editor-panel .editor-header {
   display: flex;
@@ -165,15 +214,15 @@ body {
 .bottom-bar .val-display { font-family: monospace; color: #4fc3f7; }
 
 /* Log */
+.log-shell { background: #0a0a1a; }
 .log-panel {
-  height: 120px;
+  flex: 1;
+  min-height: 0;
   background: #0a0a1a;
-  border-top: 1px solid #333;
   overflow-y: auto;
   padding: 6px 12px;
   font-family: monospace;
   font-size: 0.75rem;
-  flex-shrink: 0;
 }
 .log-panel .line { color: #666; }
 .log-panel .line.info { color: #4fc3f7; }
@@ -204,3 +253,55 @@ body {
 }
 
 .hidden { display: none !important; }
+
+/* Сигналы */
+.signals-panel { background: #12121f; padding: 8px 10px; overflow: auto; }
+.signals-caption { color: #888; font-size: 0.72rem; margin-bottom: 8px; }
+.sig-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 1.1fr) minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #24243a;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+}
+.sig-row b { color: #e0e0e0; font-weight: 600; }
+.sig-row .ins { color: #9aa4b8; }
+.sig-row .outs { color: #4fc3f7; }
+.sig-empty { color: #777; font-size: 0.8rem; }
+
+/* Телефон: одна панель и нижние вкладки. */
+.mobile-tabs,
+#mobile-tabs {
+  display: none;
+  flex-shrink: 0;
+  background: #1a1a2e;
+  border-top: 1px solid #333;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+body.mode-mobile #mobile-tabs { display: flex; }
+#mobile-tabs button {
+  flex: 1;
+  min-height: 44px;
+  background: transparent;
+  color: #8d97ab;
+  border: none;
+  padding: 8px 2px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+#mobile-tabs button.active {
+  color: #4fc3f7;
+  box-shadow: inset 0 -2px 0 #4fc3f7;
+}
+
+@media (max-width: 767px) {
+  .header { padding: 6px 10px; }
+  .header h1 { font-size: 0.95rem; }
+  .bottom-bar { padding: 6px 8px; gap: 4px; flex-wrap: wrap; }
+  .bottom-bar button { padding: 6px 8px; }
+  .bottom-bar .status-text { min-width: 40%; }
+  .wire-hint { font-size: 0.68rem; }
+  .palette-item { min-height: 36px; }
+}

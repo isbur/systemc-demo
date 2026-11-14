@@ -8,13 +8,19 @@ import { version as jointVersion } from './vendor/joint/joint.js';
 import { compileCpp, mountAutorunElement, restoreWasmSession } from './compiler.js';
 import { scheduleSave, loadState, loadSource } from './persistence.js';
 import { loadCells, cellSourceUrl } from './cells-runtime.js';
+import { initShell, dockviewVersion } from './layout.js';
 
 // ─── DOM refs ──────────────────────────────────────────────────────
 const logPanel     = document.getElementById('log-panel');
+const signalsList  = document.getElementById('signals-list');
 const statusText   = document.getElementById('status-text');
 const cycleDisplay = document.getElementById('cycle-display');
 const paletteList  = document.getElementById('palette-list');
 const paperHost    = document.getElementById('paper-host');
+const canvasWrap   = document.getElementById('canvas-wrap');
+const stdinForm    = document.getElementById('stdin-form');
+const stdinInput   = document.getElementById('stdin-input');
+const monacoContainer = document.getElementById('monaco-container');
 
 // Buttons
 const btnCompile   = document.getElementById('btn-compile-cpp');
@@ -94,6 +100,7 @@ let isRunning = false;
 sim.on('step', ({ cycle }) => {
   cycleDisplay.textContent = `Такт: ${cycle}`;
   if (viz) viz.updateStates();
+  refreshSignals();
 });
 
 // ─── Monaco Editor ─────────────────────────────────────────────────
@@ -190,7 +197,7 @@ function initMonaco() {
     userModel = monaco.editor.createModel(saved ?? DEFAULT_CODE, 'cpp');
     cellModel = monaco.editor.createModel('', 'cpp', monaco.Uri.parse('inmemory://systemc-cell.cpp'));
     userModel.onDidChangeContent(() => saveFn());
-    monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
+    monacoEditor = monaco.editor.create(monacoContainer, {
       model: userModel,
       language: 'cpp',
       theme: 'vs-dark',
@@ -215,6 +222,7 @@ function initVisualConstructor() {
 
   viz.onEvent = (event, data) => {
     saveFn();
+    refreshSignals();
     if (event === 'element-placed') {
       setStatus(`➕ ${data.name}`);
       log(`Добавлен элемент: ${data.name} (${data.type})`, 'ok');
@@ -225,7 +233,34 @@ function initVisualConstructor() {
   sim.on('connected', () => {
     saveFn();
     if (viz) viz.updateStates();
+    refreshSignals();
   });
+  refreshSignals();
+}
+
+function refreshSignals() {
+  const list = signalsList;
+  if (!list) return;
+  if (!viz || viz.elementViews.size === 0) {
+    list.innerHTML = '<p class="sig-empty">Нет блоков на схеме</p>';
+    return;
+  }
+  const rows = [];
+  for (const view of viz.elementViews.values()) {
+    const el = view.el;
+    const ins = el.inputPins.map((pin) => `${pin}=${el.inputs[pin] ? 1 : 0}`).join(' ');
+    const outs = el.outputPins.map((pin) => `${pin}=${el.outputs[pin] ? 1 : 0}`).join(' ');
+    rows.push(
+      `<div class="sig-row"><b>${escapeHtml(el.name)}</b><span class="ins">${escapeHtml(ins)}</span><span class="outs">${escapeHtml(outs)}</span></div>`,
+    );
+  }
+  list.innerHTML = rows.join('');
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
 }
 
 // ─── Палитра элементов ──────────────────────────────────────────────
@@ -263,11 +298,14 @@ function addPaletteItem(type, config) {
 
 // ─── Drag & Drop на канву ───────────────────────────────────────────
 function initDragDrop() {
-  const host = document.getElementById('canvas-wrap');
+  const host = canvasWrap;
   host.addEventListener('dragover', (e) => {
+    const type = e.dataTransfer?.types?.includes('text/plain');
+    if (!type) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  });
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  }, true);
   host.addEventListener('drop', (e) => {
     e.preventDefault();
     const type = e.dataTransfer.getData('text/plain');
@@ -284,6 +322,7 @@ function initControls() {
   btnReset.addEventListener('click', async () => {
     await sim.resetAll();
     if (viz) viz.updateStates();
+    refreshSignals();
     cycleDisplay.textContent = 'Такт: 0';
     setStatus('↺ Сброшено');
     log('Схема сброшена', 'info');
@@ -319,7 +358,7 @@ function initCompileButton() {
 // ─── Клавиатурные сокращения ────────────────────────────────────────
 function initKeyboard() {
   document.addEventListener('keydown', (e) => {
-    if (e.target.matches('input, textarea') || e.target.closest('.monaco-editor')) return;
+    if (e.target.closest('input, textarea, .monaco-editor, .dv-tabs-and-actions-container, #mobile-tabs, #btn-reset-layout')) return;
     switch (e.key) {
       case ' ':
         e.preventDefault();
@@ -347,8 +386,8 @@ function initKeyboard() {
 
 // ─── Загрузка сохранённой схемы ────────────────────────────────────
 function initStdin() {
-  const form = document.getElementById('stdin-form');
-  const input = document.getElementById('stdin-input');
+  const form = stdinForm;
+  const input = stdinInput;
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const session = sessions[sessions.length - 1];
@@ -396,6 +435,11 @@ log('🔄 SystemC Constructor загружается...', 'info');
 btnEditorBack.addEventListener('click', showUserModule);
 
 async function boot() {
+  initShell({
+    relayoutScheme: () => viz?.relayout(),
+    relayoutCode: () => monacoEditor?.layout(),
+    onReset: () => log('Раскладка панелей сброшена', 'info'),
+  });
   try {
     const bytes = await loadCells();
     log(`Встроенные элементы: SystemC, ${(bytes / 1024).toFixed(0)} КБ`, 'ok');
@@ -416,8 +460,10 @@ async function boot() {
   }
   await tryRestore();
   setStatus('Готово. Клик — добавить блок, провод — от выхода к входу');
-  log(`Канва: JointJS ${jointVersion}`, 'info');
+  log(`Канва: JointJS ${jointVersion}, панели: Dockview ${dockviewVersion}`, 'info');
   log('Клик добавляет блок на свободное место. Space — пуск/стоп, S — шаг, R — сброс, Delete — удалить', 'info');
+  viz?.relayout();
+  monacoEditor?.layout();
 }
 
 boot();
