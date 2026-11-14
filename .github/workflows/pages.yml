@@ -38,6 +38,10 @@ jobs:
           # JointJS лежит в app/vendor и должен уехать на Pages: COEP режет CDN.
           test -s "$dest/app/vendor/joint/joint.min.js"
           test -s "$dest/app/vendor/joint/joint.js"
+          # Dockview тоже локальный: COEP не пускает CDN.
+          test -s "$dest/app/vendor/dockview/dockview.min.js"
+          test -s "$dest/app/vendor/dockview/dockview.css"
+          test -s "$dest/app/vendor/dockview/LICENSE"
           cp -a \
             09-browser-systemc/pthread-host/wasi.js \
             09-browser-systemc/pthread-host/thread.js \

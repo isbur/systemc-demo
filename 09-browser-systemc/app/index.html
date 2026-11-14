@@ -14,6 +14,7 @@
   };
 </script>
 <script src="coi-serviceworker.js"></script>
+<link rel="stylesheet" href="vendor/dockview/dockview.css">
 <link rel="stylesheet" href="style.css">
 <!-- Monaco Editor CDN -->
 <link rel="stylesheet" data-name="vs/editor/editor.main"
@@ -25,29 +26,46 @@
 
 <div class="header">
   <h1>🔄 SystemC Constructor</h1>
-  <span class="badge" title="SC_THREAD исполняется в Worker, канва шлёт ему сообщения">
-    JS + WASM · pthread
-  </span>
+  <div class="header-actions">
+    <button id="btn-reset-layout" type="button" title="Вернуть панели по умолчанию">Раскладка</button>
+    <span class="badge" title="SC_THREAD исполняется в Worker, канва шлёт ему сообщения">
+      JS + WASM · pthread
+    </span>
+  </div>
 </div>
 
-<div class="main-layout">
-  <!-- Palette -->
-  <div class="palette" id="palette">
+<div class="bottom-bar" id="sim-bar">
+  <button id="btn-reset" class="danger">↺ Сброс</button>
+  <button id="btn-step" class="primary">⏭ Шаг</button>
+  <button id="btn-run">▶ Запуск</button>
+  <span class="status-text" id="status-text">Загрузка...</span>
+  <span id="cycle-display" class="val-display">Такт: 0</span>
+</div>
+
+<div class="shell">
+  <div id="dock"></div>
+  <div id="mobile-stage"></div>
+</div>
+<nav id="mobile-tabs" aria-label="Панели"></nav>
+
+<!-- Панели живут здесь, пока их не заберёт Dockview или мобильная вкладка. -->
+<div id="panel-pen">
+  <section id="panel-palette" class="panel-body palette">
     <h3>🔧 Элементы</h3>
     <div id="palette-list"></div>
-  </div>
+  </section>
 
-  <!-- Canvas: JointJS paper. Подсказка не перехватывает мышь. -->
-  <div class="canvas-wrap" id="canvas-wrap">
-    <div id="paper-host"></div>
-    <p class="wire-hint" id="wire-hint">
-      Соединение: потяните от выходного порта (кружок справа) к входному (кружок слева).
-      На вход — только один провод. Delete — удалить блок или провод.
-    </p>
-  </div>
+  <section id="panel-scheme" class="panel-body">
+    <div class="canvas-wrap" id="canvas-wrap">
+      <div id="paper-host"></div>
+      <p class="wire-hint" id="wire-hint">
+        Соединение: потяните от выхода справа к входу слева. Пустое место — сдвиг схемы, колёсико — масштаб.
+        На вход — один провод. Delete — удалить блок или провод.
+      </p>
+    </div>
+  </section>
 
-  <!-- Editor Panel -->
-  <div class="editor-panel">
+  <section id="panel-code" class="panel-body editor-panel">
     <div class="editor-header">
       <span id="editor-title" class="badge" style="color:#4fc3f7;">⚡ Monaco — C++/SystemC</span>
       <button id="btn-editor-back" type="button" hidden>К своему модулю</button>
@@ -58,27 +76,25 @@
     <div class="compile-bar">
       <button id="btn-compile-cpp">⚡ C++ → WASM</button>
     </div>
-  </div>
+  </section>
+
+  <section id="panel-log" class="panel-body log-shell">
+    <div class="log-panel" id="log-panel"></div>
+    <form id="stdin-form" class="stdin-form">
+      <span class="stdin-prompt">stdin</span>
+      <input id="stdin-input" autocomplete="off" spellcheck="false" placeholder="Строка уходит в stdin последнего модуля">
+    </form>
+  </section>
+
+  <section id="panel-signals" class="panel-body signals-panel">
+    <p class="signals-caption">Входы и выходы блоков. Обновляется на каждом шаге.</p>
+    <div id="signals-list"></div>
+  </section>
 </div>
 
-<!-- Bottom Bar -->
-<div class="bottom-bar">
-  <button id="btn-reset" class="danger">↺ Сброс</button>
-  <button id="btn-step" class="primary">⏭ Шаг</button>
-  <button id="btn-run">▶ Запуск</button>
-  <span class="status-text" id="status-text">Загрузка...</span>
-  <span id="cycle-display" class="val-display">Такт: 0</span>
-</div>
-
-<!-- Log -->
-<div class="log-panel" id="log-panel"></div>
-<form id="stdin-form" class="stdin-form">
-  <span class="stdin-prompt">stdin</span>
-  <input id="stdin-input" autocomplete="off" spellcheck="false" placeholder="Строка уходит в stdin последнего модуля">
-</form>
-
-<!-- JointJS до Monaco: loader.js объявляет AMD define и иначе перехватит UMD-сборку. -->
+<!-- JointJS и Dockview до Monaco: loader.js объявляет AMD define и иначе перехватит UMD. -->
 <script src="vendor/joint/joint.min.js"></script>
+<script src="vendor/dockview/dockview.min.js"></script>
 <!-- Monaco AMD loader (должен быть до main.js, чтобы определить global require) -->
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 

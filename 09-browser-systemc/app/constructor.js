@@ -212,6 +212,112 @@ class VisualConstructor {
 
     this._bindPaper();
     this._bindGraph();
+    this._bindGestures();
+    this._observeHost();
+  }
+
+  /** Поджать бумагу под текущий размер панели. */
+  relayout() {
+    const box = this.host.parentElement || this.host;
+    const width = Math.floor(box.clientWidth);
+    const height = Math.floor(box.clientHeight);
+    if (width < 2 || height < 2) return;
+    if (this._paperWidth === width && this._paperHeight === height) return;
+    this._paperWidth = width;
+    this._paperHeight = height;
+    this.paper.setDimensions(width, height);
+  }
+
+  _observeHost() {
+    const box = this.host.parentElement || this.host;
+    if (typeof ResizeObserver !== 'function') {
+      this.relayout();
+      return;
+    }
+    this._hostObserver = new ResizeObserver(() => this.relayout());
+    this._hostObserver.observe(box);
+    this.relayout();
+  }
+
+  /**
+   * Сдвиг — перетаскивание пустого места, масштаб — колёсико или щипок.
+   * Слушатели висят на бумаге, не на вкладке Dockview: долгое нажатие
+   * для перетаскивания панели с канвой не пересекается.
+   */
+  _bindGestures() {
+    this._pan = null;
+    this._pointers = new Map();
+    const surface = this.paper.el;
+
+    this.paper.on('blank:pointerdown', (evt) => {
+      this._clearLinkSelection();
+      this.selectElement(null);
+      if (this._pointers.size > 1) return;
+      const translate = this.paper.translate();
+      this._pan = {
+        x: evt.clientX,
+        y: evt.clientY,
+        tx: translate.tx,
+        ty: translate.ty,
+        moved: false,
+      };
+    });
+    this.paper.on('blank:pointermove', (evt) => {
+      if (!this._pan || this._pointers.size > 1) return;
+      const dx = evt.clientX - this._pan.x;
+      const dy = evt.clientY - this._pan.y;
+      if (!this._pan.moved && Math.hypot(dx, dy) < 4) return;
+      this._pan.moved = true;
+      this.paper.translate(this._pan.tx + dx, this._pan.ty + dy);
+    });
+    this.paper.on('blank:pointerup', () => {
+      this._pan = null;
+    });
+
+    surface.addEventListener('wheel', (evt) => {
+      evt.preventDefault();
+      const current = this.paper.scale().sx || 1;
+      const next = Math.min(2.5, Math.max(0.35, current * (evt.deltaY < 0 ? 1.08 : 0.92)));
+      const local = this.paper.clientToLocalPoint(evt.clientX, evt.clientY);
+      this.paper.scaleUniformAtPoint(next, local);
+    }, { passive: false });
+
+    const remember = (evt) => {
+      if (evt.pointerType === 'mouse') return;
+      this._pointers.set(evt.pointerId, { x: evt.clientX, y: evt.clientY });
+      if (this._pointers.size === 2) {
+        this._pan = null;
+        this._pinch = this._pinchSnapshot();
+      }
+    };
+    const forget = (evt) => {
+      this._pointers.delete(evt.pointerId);
+      if (this._pointers.size < 2) this._pinch = null;
+    };
+    surface.addEventListener('pointerdown', remember);
+    surface.addEventListener('pointerup', forget);
+    surface.addEventListener('pointercancel', forget);
+    surface.addEventListener('pointermove', (evt) => {
+      if (evt.pointerType === 'mouse' || !this._pointers.has(evt.pointerId)) return;
+      this._pointers.set(evt.pointerId, { x: evt.clientX, y: evt.clientY });
+      if (this._pointers.size !== 2 || !this._pinch) return;
+      evt.preventDefault();
+      const [a, b] = [...this._pointers.values()];
+      const distance = Math.hypot(a.x - b.x, a.y - b.y);
+      if (this._pinch.distance < 1) return;
+      const next = Math.min(2.5, Math.max(0.35, this._pinch.scale * (distance / this._pinch.distance)));
+      this.paper.scaleUniformAtPoint(next, this._pinch.local);
+    }, { passive: false });
+  }
+
+  _pinchSnapshot() {
+    const [a, b] = [...this._pointers.values()];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    return {
+      distance: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      scale: this.paper.scale().sx || 1,
+      local: this.paper.clientToLocalPoint(mid.x, mid.y),
+    };
   }
 
   clientToLocal(clientX, clientY) {
