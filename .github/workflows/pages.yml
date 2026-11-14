@@ -35,6 +35,9 @@ jobs:
           cp wasi-include.json site/
           cp -a 09-browser-systemc/app "$dest/app"
           rm -rf "$dest/app/systemc-src"
+          # JointJS лежит в app/vendor и должен уехать на Pages: COEP режет CDN.
+          test -s "$dest/app/vendor/joint/joint.min.js"
+          test -s "$dest/app/vendor/joint/joint.js"
           cp -a \
             09-browser-systemc/pthread-host/wasi.js \
             09-browser-systemc/pthread-host/thread.js \
