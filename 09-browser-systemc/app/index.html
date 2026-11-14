@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SystemC Constructor</title>
+<script>
+  // На сервере с готовыми COOP/COEP воркер не регистрируется.
+  // На GitHub Pages он сам дописывает require-corp: credentialless здесь изоляцию не включает.
+  window.coi = {
+    coepCredentialless: () => false,
+    coepDegrade: () => false,
+    quiet: true,
+  };
+</script>
+<script src="coi-serviceworker.js"></script>
 <link rel="stylesheet" href="style.css">
 <!-- Monaco Editor CDN -->
 <link rel="stylesheet" data-name="vs/editor/editor.main"
@@ -15,9 +25,8 @@
 
 <div class="header">
   <h1>🔄 SystemC Constructor</h1>
-  <span class="badge"
-    title="SC_THREAD и wait() не работают — WASI без pthread; используйте SC_METHOD">
-    JS + WASM · SC_METHOD только
+  <span class="badge" title="SC_THREAD исполняется в Worker, канва шлёт ему сообщения">
+    JS + WASM · pthread
   </span>
 </div>
 
@@ -36,7 +45,8 @@
   <!-- Editor Panel -->
   <div class="editor-panel">
     <div class="editor-header">
-      <span class="badge" style="color:#4fc3f7;">⚡ Monaco — C++/SystemC</span>
+      <span id="editor-title" class="badge" style="color:#4fc3f7;">⚡ Monaco — C++/SystemC</span>
+      <button id="btn-editor-back" type="button" hidden>К своему модулю</button>
     </div>
     <div class="editor-wrap" id="editor-wrap">
       <div id="monaco-container"></div>
@@ -58,6 +68,10 @@
 
 <!-- Log -->
 <div class="log-panel" id="log-panel"></div>
+<form id="stdin-form" class="stdin-form">
+  <span class="stdin-prompt">stdin</span>
+  <input id="stdin-input" autocomplete="off" spellcheck="false" placeholder="Строка уходит в stdin последнего модуля">
+</form>
 
 <!-- Monaco AMD loader (должен быть до main.js, чтобы определить global require) -->
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>

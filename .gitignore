@@ -10,10 +10,15 @@ build-llvm-wasm/
 .tmp-libcxx/
 .tmp-llvm801/
 emsdk/
+wasi-sdk/
 tools-llvm8/
 *~
 *.o
 *.wasm
+!09-browser-systemc/app/cells/cells.wasm
+!09-browser-systemc/pthread-host/systemc-core-pthread.o
+!09-browser-systemc/pthread-host/sc_ids-pthread.o
+!09-browser-systemc/pthread-host/wasi/**/*.o
 *.log
 ring_counter.vcd
 .wasmer/

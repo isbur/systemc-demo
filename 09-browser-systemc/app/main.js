@@ -4,8 +4,9 @@
  */
 import { SimEngine, GATES } from './elements.js';
 import { VisualConstructor } from './constructor.js';
-import { compileCpp, restoreWasmExports } from './compiler.js';
-import { scheduleSave, loadState } from './persistence.js';
+import { compileCpp, mountAutorunElement, restoreWasmSession } from './compiler.js';
+import { scheduleSave, loadState, loadSource } from './persistence.js';
+import { loadCells, cellSourceUrl } from './cells-runtime.js';
 
 // ─── DOM refs ──────────────────────────────────────────────────────
 const logPanel     = document.getElementById('log-panel');
@@ -19,12 +20,16 @@ const btnCompile   = document.getElementById('btn-compile-cpp');
 const btnStep      = document.getElementById('btn-step');
 const btnReset     = document.getElementById('btn-reset');
 const btnRun       = document.getElementById('btn-run');
+const editorTitle  = document.getElementById('editor-title');
+const btnEditorBack = document.getElementById('btn-editor-back');
 
 // ─── Логирование ───────────────────────────────────────────────────
+const sessions = [];
+
 function log(msg, cls = 'line') {
   const d = document.createElement('div');
   d.className = cls;
-  d.textContent = `> ${msg}`;
+  d.textContent = cls === 'wasm' ? msg : `> ${msg}`;
   logPanel.appendChild(d);
   logPanel.scrollTop = logPanel.scrollHeight;
 }
@@ -92,11 +97,11 @@ sim.on('step', ({ cycle }) => {
 
 // ─── Monaco Editor ─────────────────────────────────────────────────
 const DEFAULT_CODE = `// ─── 4-битный кольцевой регистр на SystemC ────────────────────
-//  ⚠ SC_THREAD и wait() НЕ поддерживаются (WASI без pthread)!
-//  Используйте только SC_METHOD / SC_CTHREAD.
+//  SC_METHOD и SC_THREAD (pthread, каждый поток — Worker).
+//  Канва вызывает init/step сообщениями в Worker.
+//  Строка внизу консоли уходит в stdin модуля.
 //
-//  Модуль ДОЛЖЕН называться user_module (так его находит обёртка).
-//  Порты: clk, rst_n, enable (входы), q — sc_uint<4> (выход).
+//  Обёртка канвы ждёт порты: clk, rst_n, enable, q — sc_uint<4>.
 
 #include "systemc.h"
 
@@ -128,13 +133,64 @@ SC_MODULE(user_module) {
 `;
 
 let monacoEditor = null;
+let userModel = null;
+let cellModel = null;
+let viewGen = 0;
+let pendingSelection = undefined;
+let saveFn = () => {};
+const sourceCache = new Map();
+
+function showUserModule() {
+  viewGen++;
+  pendingSelection = undefined;
+  if (!monacoEditor || !userModel) return;
+  monacoEditor.setModel(userModel);
+  monacoEditor.updateOptions({ readOnly: false });
+  editorTitle.textContent = '⚡ Monaco — C++/SystemC';
+  btnEditorBack.hidden = true;
+  btnCompile.disabled = false;
+}
+
+async function showCellSource(el) {
+  if (!monacoEditor || !userModel) {
+    pendingSelection = el || null;
+    return;
+  }
+  const gen = ++viewGen;
+  const url = el && cellSourceUrl(el.type, GATES);
+  if (!url) {
+    showUserModule();
+    return;
+  }
+  let text = sourceCache.get(url);
+  if (!text) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      log('Нет исходника ' + el.type, 'err');
+      return;
+    }
+    text = await response.text();
+    sourceCache.set(url, text);
+  }
+  if (gen !== viewGen || !monacoEditor) return;
+  cellModel.setValue(text);
+  monacoEditor.setModel(cellModel);
+  monacoEditor.updateOptions({ readOnly: true });
+  editorTitle.textContent = `${el.name} — SystemC`;
+  btnEditorBack.hidden = false;
+  btnCompile.disabled = true;
+}
 
 function initMonaco() {
   // Monaco AMD loader уже загружен (vs/loader.js в index.html)
   require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } });
   require(['vs/editor/editor.main'], function () {
+    const saved = loadSource();
+    userModel = monaco.editor.createModel(saved ?? DEFAULT_CODE, 'cpp');
+    cellModel = monaco.editor.createModel('', 'cpp', monaco.Uri.parse('inmemory://systemc-cell.cpp'));
+    userModel.onDidChangeContent(() => saveFn());
     monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
-      value: DEFAULT_CODE,
+      model: userModel,
       language: 'cpp',
       theme: 'vs-dark',
       fontSize: 13,
@@ -143,8 +199,10 @@ function initMonaco() {
       scrollBeyondLastLine: false,
       tabSize: 2,
     });
+    if (saved !== null) log('Модуль восстановлен', 'ok');
     setStatus('Monaco Editor готов');
     log('Monaco Editor загружен', 'info');
+    if (pendingSelection !== undefined) showCellSource(pendingSelection);
   });
 }
 
@@ -152,7 +210,7 @@ function initMonaco() {
 function initVisualConstructor() {
   viz = new VisualConstructor(svg, sim);
 
-  const saveFn = scheduleSave(viz, sim);
+  saveFn = scheduleSave(viz, sim, () => userModel?.getValue());
 
   viz.onEvent = (event, data) => {
     saveFn();
@@ -160,9 +218,13 @@ function initVisualConstructor() {
       setStatus(`➕ ${data.name}`);
       log(`Добавлен элемент: ${data.name} (${data.type})`, 'ok');
     }
+    if (event === 'element-selected') showCellSource(data);
   };
 
-  sim.on('connected', () => saveFn());
+  sim.on('connected', () => {
+    saveFn();
+    if (viz) viz.updateStates();
+  });
 }
 
 // ─── Палитра элементов ──────────────────────────────────────────────
@@ -188,8 +250,12 @@ function addPaletteItem(type, config) {
 
 // ─── Drag & Drop на канву ───────────────────────────────────────────
 function initDragDrop() {
-  svg.addEventListener('dragover', (e) => e.preventDefault());
-  svg.addEventListener('drop', (e) => {
+  const host = document.getElementById('canvas-wrap');
+  host.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  host.addEventListener('drop', (e) => {
     e.preventDefault();
     const type = e.dataTransfer.getData('text/plain');
     if (!type || !GATES[type]) return;
@@ -204,8 +270,8 @@ function initDragDrop() {
 function initControls() {
   btnStep.addEventListener('click', () => { sim.step(); });
 
-  btnReset.addEventListener('click', () => {
-    sim.resetAll();
+  btnReset.addEventListener('click', async () => {
+    await sim.resetAll();
     if (viz) viz.updateStates();
     cycleDisplay.textContent = 'Такт: 0';
     setStatus('↺ Сброшено');
@@ -234,14 +300,15 @@ function initCompileButton() {
       log('⚠ Monaco ещё не загружен', 'err');
       return;
     }
-    const code = monacoEditor.getValue();
-    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem, setProgress });
+    const code = userModel ? userModel.getValue() : monacoEditor.getValue();
+    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem, setProgress, sessions });
   });
 }
 
 // ─── Клавиатурные сокращения ────────────────────────────────────────
 function initKeyboard() {
   document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input, textarea') || e.target.closest('.monaco-editor')) return;
     switch (e.key) {
       case ' ':
         e.preventDefault();
@@ -267,10 +334,43 @@ function initKeyboard() {
 }
 
 // ─── Загрузка сохранённой схемы ────────────────────────────────────
+function initStdin() {
+  const form = document.getElementById('stdin-form');
+  const input = document.getElementById('stdin-input');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const session = sessions[sessions.length - 1];
+    if (!session) {
+      log('stdin: сначала скомпилируйте модуль', 'err');
+      return;
+    }
+    const line = input.value + '\n';
+    try {
+      session.pushStdin(line);
+      log(line.replace(/\n$/, ''), 'stdin');
+      input.value = '';
+    } catch (error) {
+      log(error.message, 'err');
+    }
+  });
+}
+
 async function tryRestore() {
-  const wasmRestorer = async (uid, base64) => {
-    const exports = await restoreWasmExports(base64);
-    return exports;
+  const wasmRestorer = async (uid, bytes) => {
+    const view = viz.elementViews.get(String(uid));
+    if (view && GATES[view.type]?.autorun) {
+      await mountAutorunElement(
+        view.el,
+        bytes,
+        (text) => log(text, text.startsWith('sc_main') ? 'ok' : 'wasm'),
+        (text) => log(text, 'err'),
+        sessions,
+      );
+      return null;
+    }
+    const session = await restoreWasmSession(bytes, (text) => log(text, 'wasm'), (text) => log(text, 'err'));
+    sessions.push(session);
+    return session;
   };
   const restored = await loadState(viz, sim, log, wasmRestorer);
   if (restored) {
@@ -281,18 +381,26 @@ async function tryRestore() {
 // ─── Инициализация всего приложения ─────────────────────────────────
 log('🔄 SystemC Constructor загружается...', 'info');
 
-initVisualConstructor();
-buildPalette();
-initDragDrop();
-initControls();
-initCompileButton();
-initKeyboard();
+btnEditorBack.addEventListener('click', showUserModule);
 
-// Monaco инициализируется через AMD — это неблокирующий callback
-initMonaco();
+async function boot() {
+  try {
+    const bytes = await loadCells();
+    log(`Встроенные элементы: SystemC, ${(bytes / 1024).toFixed(0)} КБ`, 'ok');
+  } catch (error) {
+    log('SystemC-элементы не загрузились, остаётся JS: ' + error.message, 'err');
+  }
+  initVisualConstructor();
+  buildPalette();
+  initDragDrop();
+  initControls();
+  initCompileButton();
+  initStdin();
+  initKeyboard();
+  initMonaco();
+  await tryRestore();
+  setStatus('Готово. Перетащите элементы на канву');
+  log('Приложение загружено. Space — пуск/стоп, S — шаг, R — сброс', 'info');
+}
 
-// Восстанавливаем схему после того, как viz готов
-tryRestore();
-
-setStatus('Готово. Перетащите элементы на канву');
-log('Приложение загружено. Space — пуск/стоп, S — шаг, R — сброс', 'info');
+boot();

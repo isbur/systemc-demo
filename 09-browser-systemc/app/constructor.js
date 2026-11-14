@@ -1,7 +1,12 @@
 /**
  * Визуальный конструктор — SVG-based canvas для размещения и соединения элементов.
  */
-import { GATES, LogicElement } from './elements.js';
+import { GATES, LogicElement, isBuiltinType } from './elements.js';
+
+function blockHeight(inputPins, outputPins) {
+  const count = Math.max(inputPins?.length || 0, outputPins?.length || 0);
+  return count === 0 ? 46 : 40 + count * 18;
+}
 
 class VisualConstructor {
   constructor(containerEl, simEngine) {
@@ -21,21 +26,35 @@ class VisualConstructor {
   }
 
   _initSVG() {
-    this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    if (this.container instanceof SVGSVGElement) {
+      this.svg = this.container;
+    } else {
+      this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      this.container.appendChild(this.svg);
+    }
     this.svg.setAttribute('width', '100%');
     this.svg.setAttribute('height', '100%');
+    this.svg.style.display = 'block';
     this.svg.style.background = '#0d0d1a';
     this.svg.style.borderRadius = '12px';
     this.svg.style.cursor = 'default';
-    this.container.appendChild(this.svg);
+    this.svg.style.touchAction = 'none';
+  }
+
+  _clientToSvg(e) {
+    const bounds = this.svg.getBoundingClientRect();
+    return {
+      x: e.clientX - bounds.left,
+      y: e.clientY - bounds.top,
+    };
   }
 
   _initEvents() {
     this.svg.addEventListener('mousedown', (e) => {
       const target = e.target.closest('[data-el-id]');
       if (!target) {
-        // Отпускаем соединение если тащим
         if (this._connecting) this._cancelConnect();
+        this.selectElement(null);
         return;
       }
       const id = target.dataset.elId;
@@ -60,22 +79,22 @@ class VisualConstructor {
       // Выделение элемента
       this.selectElement(id);
 
-      // Перетаскивание элемента
-      this._dragging = { el, id, offsetX: e.offsetX, offsetY: e.offsetY };
+      // Сдвиг от курсора до угла элемента, в координатах канвы.
+      // offsetX на SVG — это не положение внутри фигуры, из-за него элемент прыгал в угол.
       const view = this.elementViews.get(id);
+      const point = this._clientToSvg(e);
+      this._dragging = { el, id, dx: point.x - view.x, dy: point.y - view.y };
       view.element.style.cursor = 'grabbing';
       e.preventDefault();
     });
 
-    this.svg.addEventListener('mousemove', (e) => {
+    window.addEventListener('mousemove', (e) => {
       if (this._dragging) {
-        const rect = this.svg.getBoundingClientRect();
-        const x = e.clientX - rect.left - this._dragging.offsetX;
-        const y = e.clientY - rect.top - this._dragging.offsetY;
+        const point = this._clientToSvg(e);
         const view = this.elementViews.get(this._dragging.id);
         if (view) {
-          view.x = Math.max(0, x);
-          view.y = Math.max(0, y);
+          view.x = Math.max(0, point.x - this._dragging.dx);
+          view.y = Math.max(0, point.y - this._dragging.dy);
           this._renderElement(view);
           this._redrawWires();
           this._emit('element-moved', view.el);
@@ -86,7 +105,7 @@ class VisualConstructor {
       }
     });
 
-    this.svg.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', () => {
       if (this._dragging) {
         const view = this.elementViews.get(this._dragging.id);
         if (view) view.element.style.cursor = 'grab';
@@ -145,13 +164,13 @@ class VisualConstructor {
 
   _updateWirePreview(e) {
     if (!this._wirePreview || !this._connecting) return;
-    const rect = this.svg.getBoundingClientRect();
     const pos = this._getPinPos(this._connecting.el, this._connecting.pin);
+    const point = this._clientToSvg(e);
     if (pos) {
       this._wirePreview.setAttribute('x1', pos.x);
       this._wirePreview.setAttribute('y1', pos.y);
-      this._wirePreview.setAttribute('x2', e.clientX - rect.left);
-      this._wirePreview.setAttribute('y2', e.clientY - rect.top);
+      this._wirePreview.setAttribute('x2', point.x);
+      this._wirePreview.setAttribute('y2', point.y);
     }
   }
 
@@ -180,7 +199,7 @@ class VisualConstructor {
 
     const view = {
       el, type, uid, x: x || 120, y: y || 80,
-      width: 90, height: 40 + Math.max(config.inputPins.length, config.outputPins.length) * 18,
+      width: 90, height: blockHeight(config.inputPins, config.outputPins),
       element: null,
     };
     this.elementViews.set(uid, view);
@@ -202,7 +221,12 @@ class VisualConstructor {
     const g = view.element;
     g.innerHTML = '';
     const bw = view.width, bh = view.height;
-    const config = GATES[view.type];
+    const config = GATES[view.type] || {
+      label: view.type,
+      color: '#673AB7',
+      inputPins: [],
+      outputPins: [],
+    };
 
     // Прямоугольник
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -268,11 +292,12 @@ class VisualConstructor {
   }
 
   _createPin(g, name, x, y, isInput, view) {
+    const val = isInput ? (view.el.inputs[name] ?? 0) : (view.el.outputs[name] ?? 0);
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('cx', x);
     circle.setAttribute('cy', y);
     circle.setAttribute('r', '4');
-    circle.setAttribute('fill', isInput ? '#2a2a4a' : '#4fc3f7');
+    circle.setAttribute('fill', val ? '#4fc3f7' : (isInput ? '#2a2a4a' : '#555'));
     circle.setAttribute('stroke', '#888');
     circle.setAttribute('stroke-width', '1');
     circle.dataset.pin = name;
@@ -308,7 +333,7 @@ class VisualConstructor {
       if (!fromPos || !toPos) continue;
 
       const val = c.fromEl.outputs[c.fromPin] ?? 0;
-      const color = val ? '#4fc3f7' : '#333';
+      const color = val ? '#4fc3f7' : '#5c6b7a';
       const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       group.classList.add('wire-line');
 
@@ -341,6 +366,7 @@ class VisualConstructor {
     if (id && this.elementViews.has(id)) {
       this._setSelected(id, true);
     }
+    this._emit('element-selected', id ? this.elementViews.get(id)?.el ?? null : null);
   }
 
   _setSelected(id, on) {
@@ -361,12 +387,15 @@ class VisualConstructor {
     this.engine.connections = this.engine.connections.filter(c =>
       c.fromEl !== view.el && c.toEl !== view.el
     );
-    // Удаляем элемент из симуляции
+    view.el.dispose();
     this.engine.elements = this.engine.elements.filter(e => e !== view.el);
     // Удаляем из map и svg
     this.elementViews.delete(id);
     view.element.remove();
-    if (this.selectedId === id) this.selectedId = null;
+    if (this.selectedId === id) {
+      this.selectedId = null;
+      this._emit('element-selected', null);
+    }
     this._redrawWires();
     this._emit('element-deleted', view.el);
   }
@@ -385,12 +414,30 @@ class VisualConstructor {
         const val = el.outputs[pinName] ?? 0;
         c.setAttribute('fill', val ? '#4fc3f7' : '#555');
       }
+      const inputCircles = g.querySelectorAll('.pin-input');
+      for (const c of inputCircles) {
+        const val = el.inputs[c.dataset.pin] ?? 0;
+        c.setAttribute('fill', val ? '#4fc3f7' : '#2a2a4a');
+      }
     }
     this._redrawWires();
   }
 
   /** Сериализация схемы (элементы + позиции) */
   serialize() {
+    const gates = {};
+    for (const view of this.elementViews.values()) {
+      if (isBuiltinType(view.type) || gates[view.type]) continue;
+      const config = GATES[view.type];
+      if (!config) continue;
+      gates[view.type] = {
+        label: config.label,
+        inputPins: [...config.inputPins],
+        outputPins: [...config.outputPins],
+        color: config.color,
+        ...(config.autorun ? { autorun: true } : {}),
+      };
+    }
     return {
       nextId: this._nextId,
       elements: Array.from(this.elementViews.values()).map(v => ({
@@ -399,6 +446,7 @@ class VisualConstructor {
         x: v.x,
         y: v.y,
       })),
+      gates,
     };
   }
 
@@ -428,13 +476,10 @@ class VisualConstructor {
         el, type: ed.type, uid: ed.uid,
         x: ed.x || 120, y: ed.y || 80,
         width: 90,
-        height: 40 + Math.max(
-          (GATES[ed.type]?.inputPins?.length || 0),
-          (GATES[ed.type]?.outputPins?.length || 0)
-        ) * 18,
+        height: blockHeight(GATES[ed.type]?.inputPins, GATES[ed.type]?.outputPins),
         element: null,
       };
-      this.elementViews.set(ed.uid, view);
+      this.elementViews.set(String(ed.uid), view);
 
       const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       g.dataset.elId = ed.uid;

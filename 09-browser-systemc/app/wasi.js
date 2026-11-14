@@ -12,11 +12,29 @@ export function makeWasiPreview1(logFn = () => {}) {
 
   const wasi = {
     // args
-    args_get: ok, args_sizes_get: ok,
-    // clock
-    clock_res_get: ok, clock_time_get: ok,
-    // environ
-    environ_get: ok, environ_sizes_get: ok,
+    args_get: ok,
+    args_sizes_get: (argc, argvBuf) => {
+      try {
+        const u32 = new Uint32Array(mem.buffer);
+        u32[argc >> 2] = 0;
+        u32[argvBuf >> 2] = 0;
+        return 0;
+      } catch { return 0; }
+    },
+    clock_res_get: ok,
+    clock_time_get: (id, ptr) => {
+      try { void id; new BigUint64Array(mem.buffer)[ptr >> 3] = 0n; return 0; }
+      catch { return 0; }
+    },
+    environ_get: ok,
+    environ_sizes_get: (count, size) => {
+      try {
+        const u32 = new Uint32Array(mem.buffer);
+        u32[count >> 2] = 0;
+        u32[size >> 2] = 0;
+        return 0;
+      } catch { return 0; }
+    },
     // fd
     fd_advise: ok,
     fd_allocate: ok,
@@ -27,7 +45,7 @@ export function makeWasiPreview1(logFn = () => {}) {
     fd_filestat_get: ok,
     fd_filestat_set_size: ok,
     fd_filestat_set_times: ok,
-    fd_prestat_get: ok_u32,
+    fd_prestat_get: () => 8,
     fd_prestat_dir_name: ok,
     fd_pread: ok,
     fd_pwrite: ok,

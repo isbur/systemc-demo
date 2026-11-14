@@ -2,56 +2,143 @@
  * Сохранение / восстановление схемы в localStorage,
  * включая скомпилированные WASM-модули.
  */
+import { GATES } from './elements.js';
+import { attachWasmElement, restoreWasmSession } from './compiler.js';
 
-const STORAGE_KEY = 'systemc-constructor-v2';
+const STORAGE_KEY = 'systemc-constructor-v3';
+const WASM_DB = 'systemc-constructor';
+const WASM_STORE = 'wasm';
+
+const WASM_GATE = {
+  label: 'SysC',
+  inputPins: ['clk', 'rst_n', 'enable'],
+  outputPins: ['q0', 'q1', 'q2', 'q3'],
+  color: '#673AB7',
+};
+
+function openWasmDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(WASM_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(WASM_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeWasm(uid, bytes) {
+  const db = await openWasmDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(WASM_STORE, 'readwrite');
+    tx.objectStore(WASM_STORE).put(bytes, String(uid));
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+async function readWasm(uid) {
+  const db = await openWasmDb();
+  const bytes = await new Promise((resolve, reject) => {
+    const tx = db.transaction(WASM_STORE, 'readonly');
+    const request = tx.objectStore(WASM_STORE).get(String(uid));
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return bytes ? new Uint8Array(bytes) : null;
+}
+
+async function dropStaleWasm(liveUids) {
+  const db = await openWasmDb();
+  const keys = await new Promise((resolve, reject) => {
+    const tx = db.transaction(WASM_STORE, 'readonly');
+    const request = tx.objectStore(WASM_STORE).getAllKeys();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(WASM_STORE, 'readwrite');
+    for (const key of keys) {
+      if (!liveUids.has(String(key))) tx.objectStore(WASM_STORE).delete(key);
+    }
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+export function loadSource() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    return typeof data?.source === 'string' ? data.source : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Сохранить текущее состояние визуальной схемы, соединений и WASM-бинарников.
+ * source — текст своего модуля. Если его нет (редактор ещё не готов),
+ * остаётся предыдущая копия.
  */
-export function saveState(viz, sim) {
+export async function saveState(viz, sim, source) {
   if (!viz) return;
   const data = {
     viz: viz.serialize(),
     connections: sim.serializeConnections(),
-    wasmModules: {},
   };
-
-  // Собираем WASM-бинарники с элементов (base64 по частям)
-  for (const [uid, view] of viz.elementViews) {
-    if (view.el._wasmBinary) {
-      const bytes = new Uint8Array(view.el._wasmBinary);
-      const CHUNK = 8192;
-      let parts = [];
-      for (let i = 0; i < bytes.length; i += CHUNK) {
-        const end = Math.min(i + CHUNK, bytes.length);
-        parts.push(String.fromCharCode(...bytes.subarray(i, end)));
-      }
-      data.wasmModules[uid] = btoa(parts.join(''));
-    }
+  if (typeof source === 'string') data.source = source;
+  else {
+    const previous = loadSource();
+    if (previous !== null) data.source = previous;
   }
-
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
     console.warn('saveState error:', e.message);
+  }
+
+  const live = new Set();
+  for (const [uid, view] of viz.elementViews) {
+    if (!view.el._wasmBinary) continue;
+    live.add(String(uid));
+    try {
+      await writeWasm(uid, new Uint8Array(view.el._wasmBinary));
+    } catch (e) {
+      console.warn('save wasm error:', e.message);
+    }
+  }
+  try {
+    await dropStaleWasm(live);
+  } catch (e) {
+    console.warn('prune wasm error:', e.message);
   }
 }
 
 /**
  * Создать throttled-версию saveState.
  */
-export function scheduleSave(viz, sim, delayMs = 300) {
+export function scheduleSave(viz, sim, getSource, delayMs = 300) {
   let timer = null;
-  return () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => saveState(viz, sim), delayMs);
+  const run = () => {
+    timer = null;
+    saveState(viz, sim, typeof getSource === 'function' ? getSource() : undefined);
   };
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(run, delayMs);
+  };
+  window.addEventListener('pagehide', () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    run();
+  });
+  return schedule;
 }
 
 /**
  * Восстановить схему из localStorage.
- * wasmRestorer — функция (uid, base64) => Promise<exports>,
- * которая декодирует и инстанциирует WASM-модуль.
+ * wasmRestorer — функция (uid, base64) => Promise<session>.
  *
  * Возвращает true, если данные были найдены.
  */
@@ -62,55 +149,47 @@ export async function loadState(viz, sim, log, wasmRestorer) {
     const data = JSON.parse(raw);
     if (!data.viz?.elements?.length) return false;
 
-    // Восстанавливаем WASM-модули в GATES до десериализации схемы
-    const uidToExports = {};
-    if (wasmRestorer && data.wasmModules) {
-      for (const [uid, base64] of Object.entries(data.wasmModules)) {
+    for (const element of data.viz.elements) {
+      if (GATES[element.type]) continue;
+      GATES[element.type] = data.viz.gates?.[element.type] || { ...WASM_GATE };
+    }
+
+    viz.deserialize(data.viz);
+    sim.deserializeConnections(data.connections || [], (uid) => {
+      const view = viz.elementViews.get(String(uid));
+      return view ? view.el : null;
+    });
+
+    if (wasmRestorer) {
+      for (const element of data.viz.elements) {
+        const uid = String(element.uid);
+        let bytes = null;
         try {
-          uidToExports[uid] = wasmRestorer(uid, base64);
+          bytes = await readWasm(uid);
+        } catch (e) {
+          console.warn('read wasm error:', e.message);
+        }
+        if (!bytes && data.wasmModules?.[uid]) {
+          bytes = Uint8Array.from(atob(data.wasmModules[uid]), (c) => c.charCodeAt(0));
+        }
+        if (!bytes) continue;
+        try {
+          const session = await wasmRestorer(uid, bytes);
+          if (!session) continue;
+          const view = viz.elementViews.get(uid);
+          if (!view) continue;
+          attachWasmElement(view.el, session);
+          view.el._wasmBinary = bytes;
         } catch (e) {
           console.warn('restore wasm error:', e.message);
         }
       }
-      // Дожидаемся всех
-      await Promise.all(Object.values(uidToExports));
-      // Теперь uidToExports[uid] содержит exports
-      for (const [uid, promise] of Object.entries(uidToExports)) {
-        uidToExports[uid] = await promise;
-      }
-    }
-
-    // Десериализуем элементы (типы должны уже быть в GATES)
-    viz.deserialize(data.viz);
-    sim.deserializeConnections(data.connections || [], (uid) => {
-      const view = viz.elementViews.get(uid);
-      return view ? view.el : null;
-    });
-
-    // Подключаем WASM-экспорты к восстановленным элементам
-    for (const [uid, exports] of Object.entries(uidToExports)) {
-      const view = viz.elementViews.get(uid);
-      if (!view) continue;
-      view.el._evaluateFn = (inp, out) => {
-        if (inp._prevInputs?.rst_n === 1 && inp.rst_n === 0) {
-          if (exports.reset_ring) exports.reset_ring();
-        } else if (inp._prevInputs?.clk === 0 && inp.clk === 1) {
-          if (exports.set_enable) exports.set_enable(inp.enable ?? 0);
-          const v = exports.step ? exports.step() : 0;
-          out.q0 = (v>>0)&1; out.q1 = (v>>1)&1; out.q2 = (v>>2)&1; out.q3 = (v>>3)&1;
-          return;
-        }
-        const v = exports.get_q ? exports.get_q() : 0;
-        out.q0 = (v>>0)&1; out.q1 = (v>>1)&1; out.q2 = (v>>2)&1; out.q3 = (v>>3)&1;
-      };
-      view.el._resetFn = () => { if (exports.reset_ring) exports.reset_ring(); };
-      view.el._wasmBinary = Uint8Array.from(atob(data.wasmModules[uid]), c => c.charCodeAt(0));
     }
 
     viz.updateStates();
 
     const count = data.viz.elements.length;
-    log(`↻ Схема восстановлена (${count} элементов${data.wasmModules ? ', WASM' : ''})`, 'ok');
+    log(`↻ Схема восстановлена (${count} элементов)`, 'ok');
     return true;
   } catch (e) {
     console.warn('loadState error:', e.message);
