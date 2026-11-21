@@ -72,7 +72,7 @@ const cache = fileCache(cacheDir);
 const workers = new Set();
 
 function spawn(payload) {
-  const worker = new Worker(new URL('./pthread-host/thread.js', import.meta.url), { type: 'module' });
+  const worker = new Worker(new URL('./app/thread.js', import.meta.url), { type: 'module' });
   workers.add(worker);
   worker.on('error', (error) => console.error('thread', error));
   worker.postMessage(payload);

@@ -42,9 +42,10 @@ jobs:
           test -s "$dest/app/vendor/dockview/dockview.min.js"
           test -s "$dest/app/vendor/dockview/dockview.css"
           test -s "$dest/app/vendor/dockview/LICENSE"
+          # thread.js лежит в app/: coi-serviceworker.js ставит COEP только на этот каталог.
+          test -s "$dest/app/thread.js"
           cp -a \
             09-browser-systemc/pthread-host/wasi.js \
-            09-browser-systemc/pthread-host/thread.js \
             09-browser-systemc/pthread-host/systemc-core-pthread.o \
             09-browser-systemc/pthread-host/sc_ids-pthread.o \
             "$dest/pthread-host/"
