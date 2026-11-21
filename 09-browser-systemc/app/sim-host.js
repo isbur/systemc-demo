@@ -2,8 +2,9 @@
  * Сессия одного SystemC-модуля на стороне страницы.
  * UI шлёт call(), worker исполняет экспорт. stdin — общая кольцевая память.
  *
- * Worker pthread лежит в app/: coi-serviceworker.js ставит COEP
- * только на этот каталог. Без COEP SharedArrayBuffer в поток не доезжает.
+ * Worker pthread: app/thread.js. Старый URL pthread-host/thread.js
+ * тоже должен отдавать JS (не HTML 404). COEP ставит SW из каталога
+ * 09-browser-systemc/, он покрывает оба пути.
  */
 import { createStdin, writeStdin } from '../pthread-host/wasi.js';
 

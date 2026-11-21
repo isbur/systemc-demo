@@ -33,6 +33,7 @@ jobs:
           dest=site/09-browser-systemc
           mkdir -p "$dest/pthread-host"
           cp wasi-include.json site/
+          cp 09-browser-systemc/coi-serviceworker.js "$dest/coi-serviceworker.js"
           cp -a 09-browser-systemc/app "$dest/app"
           rm -rf "$dest/app/systemc-src"
           # JointJS лежит в app/vendor и должен уехать на Pages: COEP режет CDN.
@@ -42,13 +43,16 @@ jobs:
           test -s "$dest/app/vendor/dockview/dockview.min.js"
           test -s "$dest/app/vendor/dockview/dockview.css"
           test -s "$dest/app/vendor/dockview/LICENSE"
-          # thread.js лежит в app/: coi-serviceworker.js ставит COEP только на этот каталог.
+          # SW в каталоге 09-browser-systemc/, чтобы COEP покрывал и app/, и pthread-host/.
+          test -s "$dest/coi-serviceworker.js"
           test -s "$dest/app/thread.js"
           cp -a \
             09-browser-systemc/pthread-host/wasi.js \
+            09-browser-systemc/pthread-host/thread.js \
             09-browser-systemc/pthread-host/systemc-core-pthread.o \
             09-browser-systemc/pthread-host/sc_ids-pthread.o \
             "$dest/pthread-host/"
+          test -s "$dest/pthread-host/thread.js"
           cp -a 09-browser-systemc/pthread-host/wasi "$dest/pthread-host/wasi"
           printf '%s\n' \
             '<!DOCTYPE html>' \

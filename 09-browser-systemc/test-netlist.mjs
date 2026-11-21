@@ -5,14 +5,22 @@ import { fileURLToPath } from 'node:url';
 import { CELL_UNITS, circuitFingerprint, generateCircuit, moduleShape } from './app/netlist.js';
 import { GATES } from './app/elements.js';
 
-const appDir = join(dirname(fileURLToPath(import.meta.url)), 'app');
-assert.ok(existsSync(join(appDir, 'coi-serviceworker.js')));
-assert.ok(existsSync(join(appDir, 'thread.js')), 'pthread worker must sit next to the COI service worker');
+const rootDir = dirname(fileURLToPath(import.meta.url));
+const appDir = join(rootDir, 'app');
+assert.ok(existsSync(join(rootDir, 'coi-serviceworker.js')), 'COI SW must sit above app/ so pthread-host gets COEP');
+assert.ok(existsSync(join(appDir, 'thread.js')));
 assert.match(
   readFileSync(join(appDir, 'sim-host.js'), 'utf8'),
   /new URL\('\.\/thread\.js'/,
 );
-assert.equal(existsSync(join(dirname(appDir), 'pthread-host', 'thread.js')), false);
+assert.match(
+  readFileSync(join(rootDir, 'pthread-host', 'thread.js'), 'utf8'),
+  /import ['"]\.\.\/app\/thread\.js['"]/,
+);
+assert.match(
+  readFileSync(join(appDir, 'index.html'), 'utf8'),
+  /src="\.\.\/coi-serviceworker\.js"/,
+);
 
 assert.equal(moduleShape(`int sc_main(int, char*[]) { return 0; }`).kind, 'autorun');
 assert.equal(moduleShape(`int sc_main(int, char*[]) { return 0; }`).className, 'sc_main');
