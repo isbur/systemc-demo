@@ -1,7 +1,8 @@
 /**
- * Библиотека готовых элементов и симуляционное ядро.
- * Теперь с визуальным Clock-элементом и детекцией фронта по пинам.
+ * Библиотека готовых элементов.
+ * Схема канвы — один процесс SystemC: шаг двигает общее sc_time.
  */
+import { isCircuitElement } from './netlist.js';
 
 // ─── Ядро симуляции ──────────────────────────────────────────────────────────
 
@@ -17,6 +18,12 @@ class SimEngine {
     this.maxTrace = 100;
     this.listeners = {};
     this._timer = null;
+    this._host = null;
+    this._faulted = false;
+  }
+
+  attachHost(host) {
+    this._host = host;
   }
 
   on(event, fn) {
@@ -50,87 +57,91 @@ class SimEngine {
 
   async resetAll() {
     const restart = this.running;
-    for (const el of this.elements) await el.reset();
-    for (const c of this.connections) {
-      c.toEl.inputs[c.toPin] = c.fromEl.outputs[c.fromPin] ?? 0;
-    }
-    this.time = 0;
+    if (this.running) this.stop();
+    this._faulted = false;
     this.cycle = 0;
     this.trace = [];
-    if (restart) this._startAutorun();
+    try {
+      if (this._host && this._circuitElements().length) await this._host.reset(this);
+      else this.time = 0;
+      for (const el of this.elements) {
+        if (el._autorun) await el.reset();
+      }
+    } catch (error) {
+      this._emit('error', error);
+      return;
+    }
+    if (restart) this.start();
     this._emit('reset');
   }
 
-  /** Один шаг симуляции: Clock-элементы переключаются, дельта-циклы.
-   *  WASM-элемент отвечает через сообщения в Worker, поэтому шаг асинхронный. */
-  _propagateFrom(el) {
-    for (const c of this.connections) {
-      if (c.fromEl === el) c.toEl.inputs[c.toPin] = c.fromEl.outputs[c.fromPin] ?? 0;
+  _circuitElements() {
+    return this.elements.filter((el) => isCircuitElement(el));
+  }
+
+  _legacyElements() {
+    return this.elements.filter((el) => !isCircuitElement(el) && !el._autorun
+      && (el._sim || el._evaluateAsync || el._wasmBinary));
+  }
+
+  async _driveLegacy(legacy, prev) {
+    if (!legacy.length) return;
+    for (const link of this.connections) {
+      if (isCircuitElement(link.toEl)) continue;
+      link.toEl.inputs[link.toPin] = link.fromEl.outputs[link.fromPin] ?? 0;
+    }
+    for (const el of legacy) {
+      el.inputs._prevInputs = prev.get(el) || {};
+      await el.evaluate();
     }
   }
 
-  /** Комбинаторика до стабилизации. Фронт такта здесь не сэмплируется. */
-  async _settleCombo() {
-    for (let i = 0; i < 20; i++) {
-      let changed = false;
-      for (const el of this.elements) {
-        if (el._isClock || el._sequential) continue;
-        const result = await el.evaluate();
-        if (!result.changed) continue;
-        changed = true;
-        this._propagateFrom(el);
-      }
-      if (!changed) return;
-    }
+  _snapshot() {
+    const snapshot = {};
+    for (const el of this.elements) snapshot[el.name] = { ...el.outputs };
+    return snapshot;
   }
 
+  async rebuild() {
+    if (!this._host || !this._circuitElements().length) return null;
+    const sample = await this._host.sync(this);
+    this._noteFault(sample);
+    this._emit('step', { cycle: this.cycle, time: this.time, elements: this.elements });
+    return sample;
+  }
+
+  _noteFault(sample) {
+    if (!sample?.status || this._faulted) return;
+    this._faulted = true;
+    this._emit('fault', sample);
+    this.stop();
+  }
+
+  /** Полпериода общего sc_clock. Дельта-циклы делает планировщик SystemC. */
   async step() {
     if (this._busy) return;
     this._busy = true;
     try {
-    this.cycle++;
-    this.time += this.clockPeriod;
-
-    // Сначала постоянные уровни (VCC на enable), и только потом фронт.
-    await this._settleCombo();
-
-    for (const el of this.elements) {
-      const prev = {};
-      for (const pin of el.inputPins) prev[pin] = el.inputs[pin] ?? 0;
-      el.inputs._prevInputs = prev;
+      const legacy = this._legacyElements();
+      const prev = new Map(legacy.map((el) => [el, { ...el.inputs }]));
+      if (this._host && this._circuitElements().length) {
+        const sample = await this._host.step(this);
+        this._noteFault(sample);
+      }
+      await this._driveLegacy(legacy, prev);
+      this.cycle++;
+      const snapshot = this._snapshot();
+      this.trace.push({ cycle: this.cycle, time: this.time, snapshot });
+      if (this.trace.length > this.maxTrace) this.trace.shift();
+      this._emit('step', { cycle: this.cycle, time: this.time, elements: this.elements });
+      return snapshot;
+    } catch (error) {
+      this.stop();
+      this._emit('error', error);
+      throw error;
+    } finally {
+      this._busy = false;
     }
-
-    for (const el of this.elements) {
-      if (el._isClock) await el.evaluate();
-    }
-    for (const el of this.elements) {
-      if (el._isClock) this._propagateFrom(el);
-    }
-
-    // Последовательностные элементы — один раз за такт, иначе тот же фронт
-    // сдвигает регистр в каждом дельта-цикле.
-    for (const el of this.elements) {
-      if (el._sequential) await el.evaluate();
-    }
-    for (const el of this.elements) {
-      if (el._sequential) this._propagateFrom(el);
-    }
-
-    await this._settleCombo();
-
-    // 5. Трейс
-    const snapshot = {};
-    for (const el of this.elements) {
-      snapshot[el.name] = { ...el.outputs };
-    }
-    this.trace.push({ cycle: this.cycle, time: this.time, snapshot });
-    if (this.trace.length > this.maxTrace) this.trace.shift();
-
-    this._emit('step', { cycle: this.cycle, time: this.time, elements: this.elements });
-    return snapshot;
-  } finally {
-    this._busy = false;
-  }
   }
 
   _startAutorun() {
@@ -146,7 +157,7 @@ class SimEngine {
     this._startAutorun();
     const stepFn = async () => {
       if (!this.running) return;
-      await this.step();
+      try { await this.step(); } catch { /* error already emitted */ }
       if (!this.running) return;
       this._timer = setTimeout(stepFn, intervalMs);
     };
@@ -162,6 +173,7 @@ class SimEngine {
 
   serializeConnections() {
     return this.connections.map(c => ({
+      id: c.id,
       fromUid: c.fromEl.uid, fromPin: c.fromPin,
       toUid: c.toEl.uid, toPin: c.toPin,
     }));
@@ -198,6 +210,7 @@ class LogicElement {
 
     this.cellType = config.cellType || 0;
     this.sourceFile = config.sourceFile || '';
+    this.syscSource = config.source || '';
     if (config.evaluate) this._evaluateFn = config.evaluate;
     if (config.reset) this._resetFn = config.reset;
     if (config.isClock) this._isClock = true;

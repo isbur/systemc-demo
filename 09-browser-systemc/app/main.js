@@ -7,8 +7,9 @@ import { VisualConstructor } from './constructor.js';
 import { version as jointVersion } from './vendor/joint/joint.js';
 import { compileCpp, mountAutorunElement, restoreWasmSession } from './compiler.js';
 import { scheduleSave, loadState, loadSource } from './persistence.js';
-import { loadCells, cellSourceUrl } from './cells-runtime.js';
+import { cellSourceUrl } from './cells-runtime.js';
 import { initShell, dockviewVersion } from './layout.js';
+import { createCircuitHost } from './circuit-build.js';
 
 // ─── DOM refs ──────────────────────────────────────────────────────
 const logPanel     = document.getElementById('log-panel');
@@ -97,19 +98,31 @@ const sim = new SimEngine();
 let viz = null;
 let isRunning = false;
 
-sim.on('step', ({ cycle }) => {
-  cycleDisplay.textContent = `Такт: ${cycle}`;
+sim.on('step', ({ cycle, time }) => {
+  const ns = Number.isFinite(time) ? time : 0;
+  cycleDisplay.textContent = `Такт: ${cycle} · ${ns} ns`;
   if (viz) viz.updateStates();
   refreshSignals();
+});
+sim.on('error', (error) => {
+  log(error.message || String(error), 'err');
+  isRunning = false;
+  btnRun.textContent = '▶ Запуск';
+  setStatus('Ошибка симуляции');
+});
+sim.on('fault', (sample) => {
+  log(sample?.status === 1
+    ? 'Дельта-циклы не сошлись — комбинационная петля. SystemC остановил модель.'
+    : 'SystemC остановил модель', 'err');
+  isRunning = false;
+  btnRun.textContent = '▶ Запуск';
+  setStatus('Модель остановлена');
 });
 
 // ─── Monaco Editor ─────────────────────────────────────────────────
 const DEFAULT_CODE = `// ─── 4-битный кольцевой регистр на SystemC ────────────────────
-//  SC_METHOD и SC_THREAD (pthread, каждый поток — Worker).
-//  Канва вызывает init/step сообщениями в Worker.
-//  Строка внизу консоли уходит в stdin модуля.
-//
-//  Обёртка канвы ждёт порты: clk, rst_n, enable, q — sc_uint<4>.
+//  Модуль с портами clk, rst_n, enable и q (sc_uint<4>) встаёт на канву.
+//  Вся схема — одно ядро SystemC: общий sc_clock и sc_time.
 
 #include "systemc.h"
 
@@ -317,13 +330,13 @@ function initDragDrop() {
 
 // ─── Кнопки управления ─────────────────────────────────────────────
 function initControls() {
-  btnStep.addEventListener('click', () => { sim.step(); });
+  btnStep.addEventListener('click', () => { sim.step().catch(() => {}); });
 
   btnReset.addEventListener('click', async () => {
     await sim.resetAll();
     if (viz) viz.updateStates();
     refreshSignals();
-    cycleDisplay.textContent = 'Такт: 0';
+    cycleDisplay.textContent = 'Такт: 0 · 0 ns';
     setStatus('↺ Сброшено');
     log('Схема сброшена', 'info');
   });
@@ -351,7 +364,7 @@ function initCompileButton() {
       return;
     }
     const code = userModel ? userModel.getValue() : monacoEditor.getValue();
-    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem, setProgress, sessions });
+    await compileCpp(code, { viz, GATES, log, setStatus, addPaletteItem, setProgress, sessions, sim });
   });
 }
 
@@ -440,12 +453,7 @@ async function boot() {
     relayoutCode: () => monacoEditor?.layout(),
     onReset: () => log('Раскладка панелей сброшена', 'info'),
   });
-  try {
-    const bytes = await loadCells();
-    log(`Встроенные элементы: SystemC, ${(bytes / 1024).toFixed(0)} КБ`, 'ok');
-  } catch (error) {
-    log('SystemC-элементы не загрузились, остаётся JS: ' + error.message, 'err');
-  }
+  sim.attachHost(createCircuitHost({ log, setStatus, setProgress, sessions }));
   initVisualConstructor();
   buildPalette();
   initDragDrop();
@@ -459,11 +467,13 @@ async function boot() {
     log('Monaco не загрузился: ' + error.message, 'err');
   }
   await tryRestore();
+  window.__sysc = { sim, viz, GATES };
   setStatus('Готово. Клик — добавить блок, провод — от выхода к входу');
   log(`Канва: JointJS ${jointVersion}, панели: Dockview ${dockviewVersion}`, 'info');
-  log('Клик добавляет блок на свободное место. Space — пуск/стоп, S — шаг, R — сброс, Delete — удалить', 'info');
+  log('Схема собирается одним ядром SystemC. Space — пуск/стоп, S — шаг, R — сброс', 'info');
   viz?.relayout();
   monacoEditor?.layout();
+  if (sim.elements.length) sim.rebuild().catch(() => {});
 }
 
 boot();

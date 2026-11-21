@@ -61,6 +61,9 @@ export function createSimSession(logWasm, logError) {
     call(name, args = []) {
       return request({ type: 'call', name, args });
     },
+    sample() {
+      return request({ type: 'sample' });
+    },
     pushStdin(text) {
       if (!writeStdin(stdin, text)) throw new Error('буфер stdin переполнен');
     },

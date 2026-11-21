@@ -22,5 +22,5 @@ tools-llvm8/
 *.log
 ring_counter.vcd
 .wasmer/
-.npm-cache/
+.cache/
 package-lock.json

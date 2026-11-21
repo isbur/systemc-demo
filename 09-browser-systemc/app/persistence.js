@@ -3,7 +3,8 @@
  * включая скомпилированные WASM-модули.
  */
 import { GATES } from './elements.js';
-import { attachWasmElement, restoreWasmSession } from './compiler.js';
+import { attachWasmElement } from './compiler.js';
+import { isCircuitElement } from './netlist.js';
 
 const STORAGE_KEY = 'systemc-constructor-v3';
 const WASM_DB = 'systemc-constructor';
@@ -175,6 +176,8 @@ export async function loadState(viz, sim, log, wasmRestorer) {
           bytes = Uint8Array.from(atob(data.wasmModules[uid]), (c) => c.charCodeAt(0));
         }
         if (!bytes) continue;
+        const placed = viz.elementViews.get(uid);
+        if (placed && isCircuitElement(placed.el)) continue;
         try {
           const session = await wasmRestorer(uid, bytes);
           if (!session) continue;
