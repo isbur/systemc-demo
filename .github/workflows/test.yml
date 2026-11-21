@@ -20,3 +20,6 @@ jobs:
       - name: Simulation and incremental build
         working-directory: 09-browser-systemc
         run: node test-circuit.mjs
+      - name: sc_main pthread
+        working-directory: 09-browser-systemc
+        run: node test-sc-main.mjs

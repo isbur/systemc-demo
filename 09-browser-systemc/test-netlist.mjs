@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CELL_UNITS, circuitFingerprint, generateCircuit, moduleShape } from './app/netlist.js';
 import { GATES } from './app/elements.js';
+
+const appDir = join(dirname(fileURLToPath(import.meta.url)), 'app');
+assert.ok(existsSync(join(appDir, 'coi-serviceworker.js')));
+assert.ok(existsSync(join(appDir, 'thread.js')), 'pthread worker must sit next to the COI service worker');
+assert.match(
+  readFileSync(join(appDir, 'sim-host.js'), 'utf8'),
+  /new URL\('\.\/thread\.js'/,
+);
+assert.equal(existsSync(join(dirname(appDir), 'pthread-host', 'thread.js')), false);
+
+assert.equal(moduleShape(`int sc_main(int, char*[]) { return 0; }`).kind, 'autorun');
+assert.equal(moduleShape(`int sc_main(int, char*[]) { return 0; }`).className, 'sc_main');
 
 const shape = moduleShape(`
 #include "systemc.h"
