@@ -8,6 +8,7 @@
 import { makeWasiPreview1 } from './wasi.js';
 import { editorClangArgs } from './pthread-link.js';
 import { createSimSession } from './sim-host.js';
+import { moduleShape } from './netlist.js';
 
 function asset(path) {
   return new URL(path, import.meta.url).href;
@@ -585,6 +586,28 @@ async function compilePlainCpp(code, deps) {
   return wasmBuf;
 }
 
+async function placeStructuralModule(code, shape, deps) {
+  const { viz, GATES, log, setStatus, addPaletteItem, sim } = deps;
+  const typeId = 'wasm-module-' + Date.now();
+  const config = {
+    label: shape.className,
+    inputPins: [...shape.inputPins],
+    outputPins: [...shape.outputPins],
+    color: '#673AB7',
+    source: code,
+  };
+  GATES[typeId] = config;
+  if (addPaletteItem) addPaletteItem(typeId, config);
+  const el = viz.addElement(typeId, 300, 200);
+  if (el) {
+    el.syscSource = code;
+    el.name = shape.className;
+  }
+  log(`Модуль ${shape.className} добавлен в общее ядро`, 'ok');
+  setStatus('Сборка схемы…');
+  if (sim?.rebuild) await sim.rebuild();
+}
+
 /**
  * Главная функция компиляции.
  *
@@ -601,6 +624,15 @@ export async function compileCpp(code, deps) {
   const hasSysC = usesSystemC(code);
 
   try {
+    if (hasSysC) {
+      const shape = moduleShape(code);
+      if (shape.kind === 'bool' || shape.kind === 'canvas-uint') {
+        await placeStructuralModule(code, shape, deps);
+        setProgress(100, 100, '✅ В общем ядре');
+        setStatus(`✅ ${shape.className}`);
+        return;
+      }
+    }
     const built = hasSysC
       ? await compileSystemC(code, deps)
       : { wasmBuf: await compilePlainCpp(code, deps), mode: 'gate', note: '', title: '' };

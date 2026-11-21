@@ -494,8 +494,9 @@ class VisualConstructor {
     }
   }
 
-  _makeLink(fromCell, fromPin, toCell, toPin) {
+  _makeLink(fromCell, fromPin, toCell, toPin, id) {
     const link = new shapes.standard.Link({
+      ...(id ? { id: String(id) } : {}),
       z: 1,
       router: ROUTER,
       connector: CONNECTOR,
@@ -528,7 +529,7 @@ class VisualConstructor {
     if (!src.id || !tgt.id || src.port == null || tgt.port == null) return null;
     const srcCell = this.graph.getCell(src.id);
     const tgtCell = this.graph.getCell(tgt.id);
-    if (!srcCell?.isElement?.() || !tgtCell?.isElement?.() || srcCell === tgtCell) return null;
+    if (!srcCell?.isElement?.() || !tgtCell?.isElement?.()) return null;
     const sourceGroup = this._portGroup(srcCell, src.port);
     const targetGroup = this._portGroup(tgtCell, tgt.port);
     if (sourceGroup === 'out' && targetGroup === 'in') {
@@ -547,7 +548,6 @@ class VisualConstructor {
   _canConnect(cellViewS, magnetS, cellViewT, magnetT, linkModel) {
     if (!magnetS || !magnetT || !cellViewS || !cellViewT) return false;
     if (magnetS === cellViewS.el || magnetT === cellViewT.el) return false;
-    if (cellViewS.model === cellViewT.model) return false;
     const sourcePort = magnetS.getAttribute('port');
     const targetPort = magnetT.getAttribute('port');
     if (magnetS.getAttribute('port-group') !== 'out') return false;
@@ -599,6 +599,7 @@ class VisualConstructor {
         const toEl = this._logicOf(ends.toCell);
         if (!fromEl || !toEl) continue;
         next.push({
+          id: link.id,
           fromEl,
           fromPin: ends.fromPin,
           toEl,
@@ -626,6 +627,7 @@ class VisualConstructor {
       const ends = this._directedEnds(link);
       if (!ends) continue;
       specs.push({
+        id: link.id,
         fromUid: String(ends.fromCell.get('uid')),
         fromPin: ends.fromPin,
         toUid: String(ends.toCell.get('uid')),
@@ -823,6 +825,7 @@ class VisualConstructor {
         inputPins: [...config.inputPins],
         outputPins: [...config.outputPins],
         color: config.color,
+        ...(config.source || view.el.syscSource ? { source: view.el.syscSource || config.source } : {}),
         ...(config.autorun ? { autorun: true } : {}),
       };
     }
@@ -833,6 +836,7 @@ class VisualConstructor {
         type: view.type,
         x: view.x,
         y: view.y,
+        ...(view.el.syscSource ? { source: view.el.syscSource } : {}),
       })),
       links: this._wireSpecs(),
       gates,
@@ -864,7 +868,8 @@ class VisualConstructor {
           console.warn('Пропуск неизвестного элемента', element?.type);
           continue;
         }
-        this._place(element.type, { x: element.x, y: element.y }, { uid: element.uid, fixed: true });
+        const placed = this._place(element.type, { x: element.x, y: element.y }, { uid: element.uid, fixed: true });
+        if (element.source && placed) placed.syscSource = element.source;
       }
     } finally {
       this._restoring = false;
@@ -890,11 +895,11 @@ class VisualConstructor {
         if (!spec) continue;
         const fromView = this.elementViews.get(String(spec.fromUid));
         const toView = this.elementViews.get(String(spec.toUid));
-        if (!fromView || !toView || fromView === toView) continue;
+        if (!fromView || !toView) continue;
         if (!fromView.el.outputPins.includes(spec.fromPin)) continue;
         if (!toView.el.inputPins.includes(spec.toPin)) continue;
         if (this._inputTaken(toView.cell, spec.toPin)) continue;
-        this.graph.addCell(this._makeLink(fromView.cell, spec.fromPin, toView.cell, spec.toPin));
+        this.graph.addCell(this._makeLink(fromView.cell, spec.fromPin, toView.cell, spec.toPin, spec.id));
       }
     } finally {
       this._restoring = false;

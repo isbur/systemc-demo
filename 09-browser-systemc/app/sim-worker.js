@@ -4,6 +4,7 @@
  * этот worker в этот момент блокируется в Atomics.wait и не может создать вложенный Worker.
  */
 import { createLog, makeImports, memoryLimits } from '../pthread-host/wasi.js';
+import { readSample } from './circuit-run.js';
 
 let nextTid = 1;
 let module;
@@ -41,6 +42,10 @@ self.onmessage = async (event) => {
       ));
       if (instance.exports.__wasm_call_ctors) instance.exports.__wasm_call_ctors();
       reply(data.id, 0);
+      return;
+    }
+    if (data.type === 'sample') {
+      reply(data.id, readSample(instance.exports, memory));
       return;
     }
     if (data.type === 'call') {
